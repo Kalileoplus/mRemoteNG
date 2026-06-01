@@ -1,0 +1,8 @@
+PyQt6>=6.6.0
+PyQt6-Qt6>=6.6.0
+PyQt6-WebEngine>=6.6.0
+paramiko>=3.4.0
+cryptography>=42.0.0
+lxml>=5.1.0
+pyserial>=3.5
+bcrypt>=4.1.0

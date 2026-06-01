@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Connections Name="Connessioni" Export="False" ConfVersion="2.8" EncryptionEngine="AES" BlockCipherMode="GCM" KdfIterations="1000" FullFileEncryption="False">
+    <!-- Copia questo file come confCons.xml e aggiungi le tue connessioni -->
+    <!-- Esempio:
+    <Node Name="MioServer" Type="Connection" Descr="" Icon="mRemoteNG" Panel="Generale"
+          Hostname="192.168.1.1" Port="22" Username="" Password="" Protocol="SSH2" />
+    -->
+</Connections>
