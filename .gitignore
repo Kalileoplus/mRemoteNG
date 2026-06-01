@@ -44,3 +44,14 @@ desktop.ini
 # Log
 *.log
 logs/
+
+# PyInstaller build output
+PyMRemoteNG/dist/
+PyMRemoteNG/build/
+*.spec.bak
+
+# Icona generata (si rigenera con create_icon.py)
+PyMRemoteNG/icon.ico
+
+# Installer output
+dist/
