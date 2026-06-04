@@ -48,7 +48,8 @@ class VNCProtocol(ProtocolBase):
             cmd = [viewer, f"{info.hostname}::{info.port}"]
             if password and "tigervnc" in viewer.lower() or "tvnc" in viewer.lower():
                 cmd += ["-passwd", password]
-            self._process = subprocess.Popen(cmd)
+            flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            self._process = subprocess.Popen(cmd, creationflags=flags)
             self._label.setText(f"VNC avviato verso {info.hostname}:{info.port}")
             self.on_connected()
             return True

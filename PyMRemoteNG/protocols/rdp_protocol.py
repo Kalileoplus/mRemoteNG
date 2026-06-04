@@ -159,7 +159,9 @@ class _RDPThread(QThread):
     def run(self):
         # Avvia mstsc — identico a rdp_engine.py: Popen semplice
         try:
-            self._proc = subprocess.Popen(["mstsc", self._rdp_file])
+            self._proc = subprocess.Popen(
+                ["mstsc", self._rdp_file], creationflags=_NO_WIN
+            )
         except Exception as e:
             self.failed.emit(f"mstsc.exe non trovato: {e}")
             return
@@ -226,20 +228,28 @@ class _StatusWidget(QWidget):
 
 # ── Credential helper — identico a rdp_engine._store_rdp_credentials ──────────
 
+_NO_WIN = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+
 def _store_credentials(host: str, user: str, password: str):
     if not user or not password:
         return
     try:
         subprocess.run(
-            ["cmdkey",
-             f"/generic:TERMSRV/{host}",
-             f"/user:{user}",
-             f"/pass:{password}"],
+            ["cmdkey", f"/generic:TERMSRV/{host}",
+             f"/user:{user}", f"/pass:{password}"],
             shell=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=_NO_WIN, timeout=5,
         )
+    except Exception:
+        pass
+
+
+def _safe_remove(path: str):
+    try:
+        if os.path.exists(path):
+            os.remove(path)
     except Exception:
         pass
 
@@ -248,9 +258,8 @@ def _delete_credentials(host: str):
     try:
         subprocess.run(
             ["cmdkey", f"/delete:TERMSRV/{host}"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=_NO_WIN, timeout=5,
         )
     except Exception:
         pass
@@ -349,12 +358,15 @@ class RDPProtocol(ProtocolBase):
             self._canvas.detach_child()
         if self._thread:
             self._thread.kill()
-            self._thread.wait(1000)
-        if self._rdp_file and os.path.exists(self._rdp_file):
-            try:
-                os.remove(self._rdp_file)
-            except Exception:
-                pass
+            self._thread.quit()
+            self._thread.finished.connect(self._thread.deleteLater)
+            self._thread = None
+        rdp = self._rdp_file
+        if rdp:
+            # Elimina il file .rdp in background dopo 2s
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(2000, lambda: _safe_remove(rdp))
+            self._rdp_file = ""
         self.on_disconnected()
 
     def get_widget(self) -> QWidget:

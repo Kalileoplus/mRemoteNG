@@ -50,7 +50,8 @@ class PuttyProtocol(ProtocolBase):
             cmd = [putty, proto_flag, info.hostname, "-P", str(info.port)]
             if info.username:
                 cmd += ["-l", info.username]
-            self._process = subprocess.Popen(cmd)
+            flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            self._process = subprocess.Popen(cmd, creationflags=flags)
             self._label.setText(f"PuTTY avviato: {info.protocol.value} → {info.hostname}:{info.port}")
             self.on_connected()
             return True

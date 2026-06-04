@@ -11,7 +11,9 @@ echo.
 :: -------------------------------------------------------
 :: 1. Dipendenze Python
 :: -------------------------------------------------------
-echo [1/5] Controllo dipendenze Python...
+echo [1/5] Installo dipendenze Python...
+pip install -r "%~dp0PyMRemoteNG\requirements.txt" -q
+if errorlevel 1 ( echo [ERRORE] Installazione dipendenze fallita. & pause & exit /b 1 )
 pip show pillow      >nul 2>&1 || pip install pillow      -q
 pip show pyinstaller >nul 2>&1 || pip install pyinstaller -q
 echo       OK

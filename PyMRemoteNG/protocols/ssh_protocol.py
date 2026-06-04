@@ -505,7 +505,9 @@ class TerminalWidget(QWidget):
     def cleanup(self):
         if self._reader:
             self._reader.stop()
-            self._reader.wait(1500)
+            self._reader.quit()
+            # Non aspettiamo sul main thread: il thread è daemon e muore da solo
+            self._reader.finished.connect(self._reader.deleteLater)
         self.term.cleanup()
 
 
@@ -521,6 +523,11 @@ class SSHLoginWorker(QThread):
 
     def __init__(self, hostname: str, port: int, username: str, password: str):
         super().__init__()
+        hostname = hostname.strip()
+        if "@" in hostname:
+            user_part, hostname = hostname.rsplit("@", 1)
+            if not username.strip():
+                username = user_part
         self.hostname = self._norm(hostname)
         self.port     = port or 22
         self.username = username.strip()
@@ -611,9 +618,18 @@ class SSHProtocol(ProtocolBase):
 
     def connect(self) -> bool:
         info = self.connection_info
-        from core.crypto import decrypt
-        pw = decrypt(info.password) if info.password else ""
-        self._worker = SSHLoginWorker(info.hostname, info.port or 22, info.username, pw)
+
+        # Mostra dialogo di autenticazione
+        from ui.dialogs.auth_dialog import SSHAuthDialog
+        dlg = SSHAuthDialog(info, self.parent_widget)
+        if dlg.exec() != SSHAuthDialog.DialogCode.Accepted:
+            self._widget.write_info("Connessione annullata.\n")
+            return False
+
+        username = dlg.result_username
+        pw       = dlg.result_password
+
+        self._worker = SSHLoginWorker(info.hostname, info.port or 22, username, pw)
         self._worker.connected.connect(self._on_connected)
         self._worker.ask_username.connect(self._ask_username)
         self._worker.ask_password.connect(self._ask_password)
@@ -626,6 +642,15 @@ class SSHProtocol(ProtocolBase):
         self._widget.write_success("Connesso — digita direttamente qui sopra\n")
         self._widget.set_channel(ch)
         self.on_connected()
+        try:
+            from core.session_logger import SessionLogger
+            SessionLogger.get_instance().log(
+                "CONNECT", self.connection_info.hostname,
+                self.connection_info.protocol.value,
+                f"user={self.connection_info.username}"
+            )
+        except Exception:
+            pass
 
     def _ask_username(self):
         self._widget.write_info("login as: ")
@@ -644,9 +669,29 @@ class SSHProtocol(ProtocolBase):
     def _on_failed(self, msg: str):
         self._widget.write_error(msg)
         self.on_disconnected()
+        try:
+            from core.session_logger import SessionLogger
+            SessionLogger.get_instance().log(
+                "ERROR", self.connection_info.hostname,
+                self.connection_info.protocol.value,
+                msg.strip()
+            )
+        except Exception:
+            pass
 
     def disconnect(self):
-        if self._worker: self._worker.quit()
+        try:
+            from core.session_logger import SessionLogger
+            SessionLogger.get_instance().log(
+                "DISCONNECT", self.connection_info.hostname,
+                self.connection_info.protocol.value
+            )
+        except Exception:
+            pass
+        if self._worker:
+            self._worker.quit()
+            self._worker.finished.connect(self._worker.deleteLater)
+            self._worker = None
         self._widget.cleanup()
         self.on_disconnected()
 
