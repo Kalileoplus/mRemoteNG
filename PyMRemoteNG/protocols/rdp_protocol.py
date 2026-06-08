@@ -24,7 +24,8 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QSizePolicy, QApplication
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QSizePolicy, QApplication
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -47,6 +48,8 @@ RedrawWindow   = _u32.RedrawWindow
 FindWindowW    = _u32.FindWindowW
 FindWindowW.restype = ctypes.c_void_p
 
+_ShowWindow = _u32.ShowWindow
+
 GWL_STYLE      = -16
 WS_CHILD       = 0x40000000
 WS_VISIBLE     = 0x10000000
@@ -60,6 +63,7 @@ SWP_NOSIZE      = 0x0001
 SWP_NOZORDER    = 0x0004
 SWP_SHOWWINDOW  = 0x0040
 SWP_FRAMECHANGED = 0x0020
+SW_SHOW         = 5
 
 
 def _attach_window(hwnd: int, parent_hwnd: int):
@@ -72,6 +76,24 @@ def _attach_window(hwnd: int, parent_hwnd: int):
         SetParent(hwnd, parent_hwnd)
         SetWindowPos(hwnd, 0, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW)
+        RedrawWindow(hwnd, None, None, 0x85)
+    except Exception:
+        pass
+
+
+def _release_window(hwnd: int, x: int = 120, y: int = 80,
+                    w: int = 1280, h: int = 800):
+    """Stacca hwnd dal parent Qt e ripristina le decorazioni della finestra."""
+    try:
+        cur = GetWindowLong(hwnd, GWL_STYLE)
+        # Rimuovi WS_CHILD, ripristina decorazioni normali
+        new = (cur & ~WS_CHILD) | (WS_CAPTION | WS_THICKFRAME |
+               WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_VISIBLE)
+        SetWindowLong(hwnd, GWL_STYLE, new)
+        SetParent(hwnd, 0)
+        SetWindowPos(hwnd, 0, x, y, w, h,
+                     SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW)
+        _ShowWindow(hwnd, SW_SHOW)
         RedrawWindow(hwnd, None, None, 0x85)
     except Exception:
         pass
@@ -271,20 +293,125 @@ class RDPProtocol(ProtocolBase):
 
     def __init__(self, connection_info: 'ConnectionInfo', parent_widget: QWidget):
         super().__init__(connection_info, parent_widget)
-        self._username  = connection_info.username
-        self._password  = ""
-        self._domain    = getattr(connection_info, "domain", "")
-        self._rdp_file  = ""
-        self._rdp_opts  = None
+        self._username      = connection_info.username
+        self._password      = ""
+        self._domain        = getattr(connection_info, "domain", "")
+        self._rdp_file      = ""
+        self._rdp_opts      = None
+        self._detached_hwnd = 0        # HWND quando la finestra è staccata
         self._thread: Optional[_RDPThread] = None
         self._canvas: Optional[_NativeCanvas] = None
 
-        self._status = _StatusWidget()
-        self._outer  = QWidget()
+        # ── Layout _outer ────────────────────────────────────────
+        self._outer = QWidget()
         self._outer.setStyleSheet("background:#0A0A0A;")
         ly = QVBoxLayout(self._outer)
         ly.setContentsMargins(0, 0, 0, 0)
+        ly.setSpacing(0)
+
+        # Toolbar attach/detach (nascosta finché non è connesso)
+        self._rdp_bar = self._build_rdp_bar()
+        self._rdp_bar.setVisible(False)
+        ly.addWidget(self._rdp_bar)
+
+        self._status = _StatusWidget()
         ly.addWidget(self._status)
+
+        # Placeholder "finestra staccata"
+        self._detached_label = self._build_detached_placeholder()
+        self._detached_label.setVisible(False)
+        ly.addWidget(self._detached_label)
+
+    def _build_rdp_bar(self) -> QWidget:
+        """Barra superiore con info connessione + bottoni Stacca/Aggancia."""
+        bar = QWidget()
+        bar.setFixedHeight(30)
+        bar.setStyleSheet(
+            "background:#0D1A2A; border-bottom:1px solid #1A3A5A;"
+        )
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(10, 0, 8, 0)
+        lay.setSpacing(8)
+
+        self._bar_icon = QLabel("🖥")
+        self._bar_icon.setStyleSheet("background:transparent; font-size:13px;")
+        lay.addWidget(self._bar_icon)
+
+        self._bar_host = QLabel(self.connection_info.hostname)
+        self._bar_host.setStyleSheet(
+            "color:#4E9EEC; font-size:11px; font-weight:bold; background:transparent;"
+        )
+        lay.addWidget(self._bar_host)
+
+        self._bar_status = QLabel("● Connesso")
+        self._bar_status.setStyleSheet(
+            "color:#4EC94E; font-size:10px; background:transparent;"
+        )
+        lay.addWidget(self._bar_status)
+        lay.addStretch()
+
+        # Pulsante Stacca
+        self._detach_btn = QPushButton("⤢  Stacca finestra")
+        self._detach_btn.setFixedHeight(22)
+        self._detach_btn.setToolTip("Rendi la sessione RDP una finestra mobile indipendente")
+        self._detach_btn.setStyleSheet("""
+            QPushButton {
+                background: #1A3A5A; color: #5BA8E5;
+                border: 1px solid #2A5A8A; border-radius: 3px;
+                padding: 0 10px; font-size: 11px;
+            }
+            QPushButton:hover { background: #0D5A9E; color: white; }
+        """)
+        self._detach_btn.clicked.connect(self._on_detach)
+        lay.addWidget(self._detach_btn)
+
+        # Pulsante Aggancia
+        self._reattach_btn = QPushButton("⤡  Aggancia")
+        self._reattach_btn.setFixedHeight(22)
+        self._reattach_btn.setVisible(False)
+        self._reattach_btn.setToolTip("Reinserisci la finestra RDP nel tab dell'app")
+        self._reattach_btn.setStyleSheet("""
+            QPushButton {
+                background: #1A3A1A; color: #4EC94E;
+                border: 1px solid #2A5A2A; border-radius: 3px;
+                padding: 0 10px; font-size: 11px;
+            }
+            QPushButton:hover { background: #0D6E0D; color: white; }
+        """)
+        self._reattach_btn.clicked.connect(self._on_reattach)
+        lay.addWidget(self._reattach_btn)
+
+        return bar
+
+    def _build_detached_placeholder(self) -> QWidget:
+        """Widget mostrato al posto del canvas quando la finestra è staccata."""
+        w = QWidget()
+        w.setStyleSheet("background:#050D15;")
+        vl = QVBoxLayout(w)
+        vl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        ico = QLabel("⤢")
+        ico.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ico.setStyleSheet("font-size:40px; color:#1A3A5A; background:transparent;")
+        vl.addWidget(ico)
+
+        txt = QLabel("Sessione RDP in finestra separata")
+        txt.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        txt.setStyleSheet(
+            "color:#4E9EEC; font-size:14px; font-weight:bold; background:transparent;"
+        )
+        vl.addWidget(txt)
+
+        sub = QLabel(
+            "La finestra mstsc è mobile — puoi spostarla liberamente.\n"
+            "Premi  ⤡ Aggancia  nella barra in alto per reinserirla qui."
+        )
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub.setWordWrap(True)
+        sub.setStyleSheet("color:#3A5A7A; font-size:11px; background:transparent;")
+        vl.addWidget(sub)
+
+        return w
 
     # ── connect ──────────────────────────────────────────────────────────────
 
@@ -336,21 +463,87 @@ class RDPProtocol(ProtocolBase):
     # ── callbacks ────────────────────────────────────────────────────────────
 
     def _on_attached(self, hwnd: int):
-        """Identico a rdp_engine: rimuove label, mostra canvas, fa embed."""
+        """Rimuove il label di stato, mostra la toolbar e il canvas embedded."""
+        self._status.setVisible(False)
+
         canvas = _NativeCanvas(self._outer)
         self._canvas = canvas
+        self._outer.layout().addWidget(canvas)
 
-        layout = self._outer.layout()
-        layout.removeWidget(self._status)
-        self._status.setVisible(False)
-        layout.addWidget(canvas)
-
-        # Mostra il canvas e processa eventi per creare l'HWND nativo
         canvas.show()
         QApplication.processEvents()
 
-        # Embed (identico a rdp_engine: after(200, resize))
         QTimer.singleShot(200, lambda: canvas.embed(hwnd))
+
+        # Mostra la toolbar con i controlli attach/detach
+        self._rdp_bar.setVisible(True)
+        self._bar_host.setText(
+            f"{self.connection_info.hostname}:{self.connection_info.port or 3389}"
+        )
+
+    # ── Detach / Reattach ─────────────────────────────────────────────────────
+
+    def _on_detach(self):
+        """Stacca la finestra mstsc dal tab e la rende mobile."""
+        if not self._canvas or not self._canvas._child_hwnd:
+            return
+
+        hwnd = self._canvas._child_hwnd
+        self._detached_hwnd = hwnd
+
+        # Calcola posizione iniziale della finestra staccata (centro schermo)
+        screen = QApplication.primaryScreen().availableGeometry()
+        sw, sh = screen.width(), screen.height()
+        win_w, win_h = min(1280, sw - 100), min(800, sh - 100)
+        x = (sw - win_w) // 2
+        y = (sh - win_h) // 2
+
+        # Stacca e ripristina decorazioni Windows
+        _release_window(hwnd, x, y, win_w, win_h)
+        self._canvas._child_hwnd = 0     # il canvas non controlla più la finestra
+
+        # Mostra placeholder e aggiorna toolbar
+        self._canvas.setVisible(False)
+        self._detached_label.setVisible(True)
+        self._detach_btn.setVisible(False)
+        self._reattach_btn.setVisible(True)
+        self._bar_status.setText("⤢ In finestra separata")
+        self._bar_status.setStyleSheet(
+            "color:#FFC107; font-size:10px; background:transparent;"
+        )
+
+    def _on_reattach(self):
+        """Reinserisce la finestra mstsc nel canvas del tab."""
+        hwnd = self._detached_hwnd
+        if not hwnd:
+            return
+
+        # Verifica che la finestra esista ancora
+        import ctypes
+        if not ctypes.windll.user32.IsWindow(hwnd):
+            self._bar_status.setText("● Finestra chiusa")
+            self._bar_status.setStyleSheet(
+                "color:#EF5350; font-size:10px; background:transparent;"
+            )
+            self._reattach_btn.setVisible(False)
+            return
+
+        self._detached_hwnd = 0
+
+        # Nasconde placeholder, mostra canvas
+        self._detached_label.setVisible(False)
+        self._canvas.setVisible(True)
+
+        # Re-embed
+        self._canvas.embed(hwnd)
+
+        # Aggiorna toolbar
+        self._detach_btn.setVisible(True)
+        self._reattach_btn.setVisible(False)
+        self._bar_status.setText("● Connesso")
+        self._bar_status.setStyleSheet(
+            "color:#4EC94E; font-size:10px; background:transparent;"
+        )
 
     def _on_failed(self, msg: str):
         _delete_credentials(self.connection_info.hostname)
