@@ -286,6 +286,7 @@ class PingWorker(QThread):
 
 class PingMonitorPanel(QWidget):
     connection_open_requested = pyqtSignal(str)
+    host_down = pyqtSignal(str, int)   # hostname, porta — emesso quando UP→DOWN
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -504,6 +505,7 @@ class PingMonitorPanel(QWidget):
         self._set_row_status(row, up, lat)
         self._update_stats()
         if prev is True and not up:
+            self.host_down.emit(entry["host"], entry["port"])
             try:
                 from core.session_logger import SessionLogger
                 SessionLogger.get_instance().log(

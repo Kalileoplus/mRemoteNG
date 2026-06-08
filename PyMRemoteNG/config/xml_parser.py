@@ -341,25 +341,8 @@ def save_connections(root_node: RootNode, filepath: str):
     for child in root_node.children:
         xml_root.append(_node_to_element(child))
 
-    _indent_xml(xml_root)
     tree = ET.ElementTree(xml_root)
     ET.indent(tree, space="    ")
     with open(filepath, "w", encoding="utf-8") as f:
         f.write('<?xml version="1.0" encoding="utf-8"?>\n')
         tree.write(f, encoding="unicode", xml_declaration=False)
-
-
-def _indent_xml(elem: ET.Element, level: int = 0):
-    indent = "\n" + "    " * level
-    if len(elem):
-        if not elem.text or not elem.text.strip():
-            elem.text = indent + "    "
-        if not elem.tail or not elem.tail.strip():
-            elem.tail = indent
-        for child in elem:
-            _indent_xml(child, level + 1)
-        if not child.tail or not child.tail.strip():
-            child.tail = indent
-    else:
-        if level and (not elem.tail or not elem.tail.strip()):
-            elem.tail = indent

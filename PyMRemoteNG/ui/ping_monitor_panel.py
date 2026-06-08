@@ -3,43 +3,16 @@ Ping Monitor Panel: mostra stato in tempo reale di tutti gli host.
 Verde = raggiungibile, Rosso = non raggiungibile, Grigio = non controllato.
 """
 from __future__ import annotations
-import socket
-import threading
 from typing import Dict, List, Optional
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QSpinBox, QCheckBox
 )
 from themes.dark_theme import ACCENT_COLOR, TEXT_COLOR, SUB_COLOR, BG_COLOR
-
-
-# ─────────────────────────────────────────────────────────────
-# Worker thread che pinga un host
-# ─────────────────────────────────────────────────────────────
-class PingWorker(QThread):
-    result = pyqtSignal(str, bool, float)   # host, reachable, latency_ms
-
-    def __init__(self, host: str, port: int = 22, timeout: float = 1.5):
-        super().__init__()
-        self.host    = host
-        self.port    = port
-        self.timeout = timeout
-
-    def run(self):
-        import time
-        try:
-            start = time.monotonic()
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(self.timeout)
-            r = s.connect_ex((self.host, self.port))
-            s.close()
-            elapsed = (time.monotonic() - start) * 1000
-            self.result.emit(self.host, r == 0, round(elapsed, 1))
-        except Exception:
-            self.result.emit(self.host, False, -1.0)
+from ui.tools_panel import PingWorker
 
 
 # ─────────────────────────────────────────────────────────────

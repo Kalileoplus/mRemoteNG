@@ -56,7 +56,7 @@ class ConnectionCard(QFrame):
         name_lbl.setStyleSheet(f"color: {TEXT_COLOR}; background: transparent;")
         layout.addWidget(name_lbl)
 
-        host = self.conn.hostname
+        host = self.conn.hostname or ""
         host_lbl = QLabel((host[:28] + "…") if len(host) > 28 else host)
         host_lbl.setFont(QFont("Segoe UI", 9))
         host_lbl.setStyleSheet(f"color: {SUB_COLOR}; background: transparent;")
@@ -235,10 +235,11 @@ class HomePanel(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
+        t = text.lower()
         filtered = [c for c in self._all_connections
-                    if not text or
-                    text.lower() in c.name.lower() or
-                    text.lower() in c.hostname.lower()]
+                    if not t or
+                    t in c.name.lower() or
+                    t in (c.hostname or "").lower()]
 
         if not filtered:
             self.empty_label.setVisible(True)

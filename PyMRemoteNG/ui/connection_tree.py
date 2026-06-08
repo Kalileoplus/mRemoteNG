@@ -67,12 +67,14 @@ def _folder_style(name: str) -> tuple[str, str, str]:
 # ─────────────────────────────────────────────────────────────
 class _ConnDelegate(QStyledItemDelegate):
 
-    CONN_H   = 46   # altezza riga connessione
-    FOLD_H   = 30   # altezza riga cartella
-    ROOT_H   = 32   # altezza riga root
+    CONN_H = 46
+    FOLD_H = 30
+    ROOT_H = 32
 
-    _connected_ids: Set[str] = set()
-    _ping_status:   Dict[str, Optional[bool]] = {}   # host → True/False/None
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._connected_ids: Set[str] = set()
+        self._ping_status: Dict[str, Optional[bool]] = {}
 
     def sizeHint(self, option, index):
         node = index.data(Qt.ItemDataRole.UserRole)
@@ -338,7 +340,7 @@ class ConnectionTreePanel(QWidget):
         super().__init__(parent)
         self.setMinimumWidth(210)
         self._root: Optional['RootNode'] = None
-        self._delegate = _ConnDelegate(self if hasattr(self, 'tree') else None)
+        self._delegate = _ConnDelegate()
         self._setup_ui()
 
     # ── UI ────────────────────────────────────────────────────

@@ -22,6 +22,8 @@ from PyQt6.QtGui import (
 from themes.dark_theme import DARK_QSS, ACCENT_COLOR, CARD_COLOR, TEXT_COLOR, SUB_COLOR, BG_COLOR
 from ui.connection_tree import ConnectionTreePanel
 from ui.home_panel import HomePanel
+from ui.dashboard_panel import DashboardPanel
+from ui.toast import ToastManager
 from core.models import ConnectionInfo, ContainerInfo, RootNode
 from config.xml_parser import load_connections, save_connections
 
@@ -256,8 +258,8 @@ class _ActiveSessionsBar(QWidget):
         outer.setSpacing(0)
 
         lbl = QLabel("Sessioni attive:")
-        lbl.setFixedWidth(100)
         lbl.setStyleSheet(f"color:{SUB_COLOR}; font-size:10px; font-weight:bold; background:transparent;")
+        lbl.setContentsMargins(0, 0, 6, 0)
         outer.addWidget(lbl)
 
         self._chips_widget = QWidget()
@@ -347,11 +349,14 @@ class MainWindow(QMainWindow):
 
         self._setup_menu()
         self._setup_toolbar()
-        self._setup_quickconnect_bar()   # costruisce self._qc_bar_widget
-        self._setup_central()            # usa self._qc_bar_widget
+        self._setup_quickconnect_bar()
+        self._setup_central()
         self._setup_statusbar()
         self._load_connections()
         self._start_scheduler()
+
+        # Inizializza toast dopo che la finestra è costruita
+        ToastManager.init(self)
 
     # ──────────────────────────────────────────
     # MENU BAR  (stile MobaXterm)
@@ -671,7 +676,7 @@ class MainWindow(QMainWindow):
 
         btn("Session",   "session",   lambda: self._on_new_connection(None), "Ctrl+N")
         tb.addSeparator()
-        btn("Sessions",  "sessions",  self._show_home)
+        btn("Dashboard", "sessions",  self._show_dashboard)
         btn("Split",     "split",     self._on_split)
         btn("MultiExec", "multiexec", self._on_multiexec)
         tb.addSeparator()
@@ -687,8 +692,6 @@ class MainWindow(QMainWindow):
         spacer.setStyleSheet("background: transparent;")
         tb.addWidget(spacer)
 
-        btn("X server",  "xserver",   self._on_xserver)
-        tb.addSeparator()
         btn("Exit",      "exit",      self.close)
 
         self.addToolBar(tb)
@@ -868,6 +871,7 @@ class MainWindow(QMainWindow):
         from ui.tools_panel import ToolsPanel
         self._tools_panel = ToolsPanel()
         self._tools_panel.hosts_discovered.connect(self._on_hosts_discovered)
+        self._tools_panel.ping_monitor.host_down.connect(self._on_host_down)
         self._left_stack.addWidget(self._tools_panel)
 
         # Pagina 3: Macros
@@ -893,14 +897,14 @@ class MainWindow(QMainWindow):
 
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabBar(self._tab_bar)
-        self.tab_widget.setTabsClosable(False)  # gestito da _CloseTabBar
+        self.tab_widget.setTabsClosable(False)
         self.tab_widget.setMovable(True)
         self.tab_widget.setDocumentMode(True)
         self.tab_widget.setStyleSheet(
             f"QTabWidget::pane {{ background:{BG_COLOR}; border:none; }}"
         )
 
-        # Widget di benvenuto
+        # Widget di benvenuto (visibile quando nessuna sessione è aperta)
         self._welcome = QLabel(
             "← Seleziona una connessione nel pannello di sinistra\n"
             "oppure usa Quick Connect per avviare una nuova sessione"
@@ -908,11 +912,16 @@ class MainWindow(QMainWindow):
         self._welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._welcome.setWordWrap(True)
         self._welcome.setStyleSheet(
-            f"color:{SUB_COLOR}; font-size:14px; background:{BG_COLOR}; padding:40px;")
+            f"color:{SUB_COLOR}; font-size:14px; background:{BG_COLOR}; padding:40px;"
+        )
         right_layout.addWidget(self._welcome)
         right_layout.addWidget(self.tab_widget)
         self.splitter.addWidget(right)
         self.splitter.setSizes([240, 1000])
+
+        # Dashboard come finestra separata (creata al primo click)
+        self._dashboard: DashboardPanel | None = None
+        self._dashboard_window: QWidget | None = None
 
         # home_panel mantenuto per compatibilità interna
         self.home_panel = HomePanel()
@@ -943,10 +952,13 @@ class MainWindow(QMainWindow):
     # Logica left-panel tabs
     # ──────────────────────────────────────────
     def _update_welcome(self):
-        """Mostra benvenuto quando nessuna sessione è aperta, tab widget altrimenti."""
+        """Mostra il benvenuto quando nessuna sessione è aperta."""
         has_tabs = self.tab_widget.count() > 0
         self._welcome.setVisible(not has_tabs)
         self.tab_widget.setVisible(has_tabs)
+
+    def _on_tab_changed(self, idx: int):
+        pass
 
     def _on_left_tab(self, idx: int):
         self._left_stack.setCurrentIndex(idx)
@@ -970,7 +982,7 @@ class MainWindow(QMainWindow):
     # Connessioni
     # ──────────────────────────────────────────
     def _load_connections(self):
-        os.makedirs(os.path.dirname(self._conns_path), exist_ok=True)
+        os.makedirs(os.path.dirname(self._conns_path) or ".", exist_ok=True)
         self._root = load_connections(self._conns_path)
         self.tree_panel.load_tree(self._root)
         all_c = self._root.get_all_connections_recursive()
@@ -980,9 +992,13 @@ class MainWindow(QMainWindow):
             self._tools_panel.set_connections(all_c)
 
     def _save_connections(self):
-        os.makedirs(os.path.dirname(self._conns_path), exist_ok=True)
+        os.makedirs(os.path.dirname(self._conns_path) or ".", exist_ok=True)
         save_connections(self._root, self._conns_path)
         self._set_status("Connessioni salvate ✓")
+        ToastManager.get_instance().show(
+            "success", "Configurazione salvata",
+            os.path.basename(self._conns_path), duration=2500
+        )
 
     def _open_file(self):
         from PyQt6.QtWidgets import QFileDialog
@@ -1015,6 +1031,10 @@ class MainWindow(QMainWindow):
         self._tab_bar._setup_close_buttons()
         if ok:
             self._set_status(f"Connesso a {conn.hostname} [{proto}]")
+            ToastManager.get_instance().show(
+                "success", "Connessione avviata",
+                f"{conn.name}  [{proto}]  {conn.hostname}"
+            )
         else:
             self._set_status(f"Connessione a {conn.hostname} in corso...")
         self._update_conn_count()
@@ -1106,9 +1126,32 @@ class MainWindow(QMainWindow):
         for i in range(self.tab_widget.count()-1, -1, -1):
             self._on_tab_close(i)
 
+    def _show_dashboard(self):
+        """Apre la Dashboard come finestra separata (non modale)."""
+        if self._dashboard_window is None:
+            # Crea la finestra una sola volta
+            self._dashboard_window = QWidget(self)
+            self._dashboard_window.setWindowTitle("PyMRemoteNG — Dashboard Live")
+            self._dashboard_window.setWindowFlags(Qt.WindowType.Window)
+            self._dashboard_window.resize(1060, 700)
+            self._dashboard_window.setStyleSheet(f"background:{BG_COLOR};")
+            from ui.icon_generator import create_app_icon
+            self._dashboard_window.setWindowIcon(create_app_icon(32))
+            lay = QVBoxLayout(self._dashboard_window)
+            lay.setContentsMargins(0, 0, 0, 0)
+            self._dashboard = DashboardPanel()
+            self._dashboard.open_connection.connect(self._on_open_connection)
+            lay.addWidget(self._dashboard)
+
+        self._dashboard.set_data(
+            self._root.get_all_connections_recursive() if self._root else [],
+            self._open_tabs,
+        )
+        self._dashboard_window.show()
+        self._dashboard_window.raise_()
+        self._dashboard_window.activateWindow()
+
     def _show_home(self):
-        # Con il nuovo layout le connessioni sono nel pannello sinistro;
-        # il bottone "Sessions" porta al pannello Sessions (indice 0)
         self._left_stack.setCurrentIndex(0)
         self.vtab._on_click(0)
 
@@ -1285,13 +1328,17 @@ class MainWindow(QMainWindow):
 
     def _on_scheduler_task_due(self, task):
         from core.session_logger import SessionLogger
-        from core.models import ConnectionInfo, ProtocolType
-        hosts = task.target_hosts
-        cmd   = task.command
+        hosts   = task.target_hosts
+        cmd     = task.command
         results = []
         for host in hosts:
             try:
-                import socket, paramiko
+                import socket
+                try:
+                    import paramiko
+                except ImportError:
+                    results.append(f"{host}: ERRORE - paramiko non installato")
+                    continue
                 sock = socket.create_connection((host, 22), timeout=8)
                 cli = paramiko.SSHClient()
                 cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -1309,8 +1356,20 @@ class MainWindow(QMainWindow):
                 )
             except Exception as e:
                 results.append(f"{host}: ERRORE - {e}")
+        from core.scheduler import TaskScheduler
         summary = "; ".join(results)
         TaskScheduler.get_instance().mark_ran(task.id, summary)
+        errors = sum(1 for r in results if "ERRORE" in r)
+        if errors:
+            ToastManager.get_instance().show(
+                "warning", f"Scheduler: {task.name}",
+                f"{len(hosts) - errors}/{len(hosts)} host OK"
+            )
+        else:
+            ToastManager.get_instance().show(
+                "success", f"Scheduler: {task.name}",
+                f"Completato su {len(hosts)} host"
+            )
 
     def _show_about(self):
         QMessageBox.about(self, "PyMRemoteNG",
@@ -1339,6 +1398,16 @@ class MainWindow(QMainWindow):
     def _update_conn_count(self):
         self._conn_lbl.setText(f"Sessioni aperte: {len(self._open_tabs)}")
 
+    def _on_host_down(self, host: str, port: int):
+        ToastManager.get_instance().show(
+            "error", "Host non raggiungibile",
+            f"{host}:{port} — connessione persa"
+        )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        ToastManager.get_instance().restack()
+
     def closeEvent(self, e):
         if self._open_tabs:
             r = QMessageBox.question(self, "Chiudi",
@@ -1346,6 +1415,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if r == QMessageBox.StandardButton.No:
                 e.ignore(); return
+        if self._dashboard_window:
+            self._dashboard_window.close()
         self._close_all_connections()
         self._save_connections()
         e.accept()

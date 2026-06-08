@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox, QFrame, QTextEdit
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QColor
 from themes.dark_theme import ACCENT_COLOR, CARD_COLOR, TEXT_COLOR, SUB_COLOR, BG_COLOR
 
 
@@ -141,7 +141,7 @@ class MultiExecDialog(QDialog):
 
         if self.session_list.count() == 0:
             item = QListWidgetItem("Nessuna sessione SSH attiva.")
-            item.setForeground(__import__('PyQt6.QtGui', fromlist=['QColor']).QColor(SUB_COLOR))
+            item.setForeground(QColor(SUB_COLOR))
             self.session_list.addItem(item)
 
     def _select_all(self):
