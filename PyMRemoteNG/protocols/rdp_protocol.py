@@ -275,6 +275,7 @@ class RDPProtocol(ProtocolBase):
         self._password  = ""
         self._domain    = getattr(connection_info, "domain", "")
         self._rdp_file  = ""
+        self._rdp_opts  = None
         self._thread: Optional[_RDPThread] = None
         self._canvas: Optional[_NativeCanvas] = None
 
@@ -290,27 +291,32 @@ class RDPProtocol(ProtocolBase):
     def connect(self) -> bool:
         info = self.connection_info
 
-        # Credential picker
-        from ui.dialogs.credential_picker_dialog import CredentialPickerDialog
-        dlg = CredentialPickerDialog(info, self._outer)
-        if dlg.exec() == 0:
+        # Dialogo pre-connessione: credenziali + redirect + display
+        from ui.dialogs.rdp_connect_dialog import RDPConnectDialog
+        dlg = RDPConnectDialog(info, self._outer)
+        if dlg.exec() != RDPConnectDialog.DialogCode.Accepted:
             self._status.set("Connessione annullata.", "", SUB_COLOR)
             return False
 
-        self._username = dlg.result_username
-        self._password = dlg.result_password
-        self._domain   = dlg.result_domain
+        opts = dlg.result_opts
+        self._username = opts.username
+        self._password = opts.password
+        self._domain   = opts.domain
+        self._rdp_opts = opts
 
-        # Dimensioni sessione = schermo primario
-        screen = QApplication.primaryScreen()
-        geom   = screen.availableGeometry()
-        w, h   = geom.width(), geom.height()
+        # Risoluzione
+        if opts.resolution == "fullscreen":
+            screen = QApplication.primaryScreen()
+            geom   = screen.availableGeometry()
+            w, h   = geom.width(), geom.height()
+        else:
+            w, h = opts.width, opts.height
 
-        # Salva credenziali (identico a rdp_engine._store_rdp_credentials)
+        # Salva credenziali in Windows Credential Manager
         _store_credentials(info.hostname, self._username, self._password)
 
-        # Crea file .rdp (identico a rdp_engine._create_rdp_file)
-        self._rdp_file = self._make_rdp_file(info, w, h)
+        # Crea file .rdp con tutte le opzioni selezionate
+        self._rdp_file = self._make_rdp_file(info, w, h, opts)
         if not self._rdp_file:
             self._status.set("Impossibile creare il file RDP.", "", "#E05252")
             return False
@@ -377,28 +383,74 @@ class RDPProtocol(ProtocolBase):
 
     # ── .rdp file — identico a rdp_engine._create_rdp_file ──────────────────
 
-    def _make_rdp_file(self, info, w: int, h: int) -> str:
+    def _make_rdp_file(self, info, w: int, h: int, opts=None) -> str:
         from core.crypto import decrypt
-        # Risolvi password
         if not self._password and info.password:
             self._password = decrypt(info.password)
 
         user_str = (f"{self._domain}\\{self._username}"
                     if self._domain else self._username)
 
+        # Schermo intero vs finestra
+        screen_mode = "2" if (opts is None or opts.resolution == "fullscreen") else "1"
+
+        # NLA / livello autenticazione
+        if opts and opts.use_nla:
+            enablecredsspsupport = "1"
+            auth_level = "0"
+        else:
+            enablecredsspsupport = "0"
+            auth_level = "0"
+
+        # Avvisi certificato
+        disable_warn = "1" if (opts is None or opts.disable_warning) else "0"
+
+        # Reindirizzamento
+        redir_clipboard = "1" if (opts is None or opts.redirect_clipboard) else "0"
+        redir_drives    = "DynamicDrives" if (opts and opts.redirect_drives) else "0"
+        redir_printers  = "1" if (opts and opts.redirect_printers) else "0"
+        redir_serial    = "1" if (opts and opts.redirect_serial) else "0"
+        redir_smartcard = "1" if (opts and opts.redirect_smartcard) else "0"
+        audio_mode      = "0" if (opts and opts.redirect_audio) else "2"  # 0=play here, 2=no play
+        mic_mode        = "1" if (opts and opts.redirect_microphone) else "0"
+        color_depth     = str(opts.color_depth) if opts else "32"
+
         lines = [
             f"full address:s:{info.hostname}",
-            "screen mode id:i:2",
-            "displayconnectionbar:i:0",
-            "smart sizing:i:1",
-            "prompt for credentials:i:0",
-            "promptcredentialonce:i:0",
-            "authentication level:i:0",
-            "enablecredsspsupport:i:1",
-            "use multimon:i:0",
+            f"server port:i:{info.port or 3389}",
+            f"screen mode id:i:{screen_mode}",
             f"desktopwidth:i:{w}",
             f"desktopheight:i:{h}",
-            "session bpp:i:32",
+            f"session bpp:i:{color_depth}",
+            "displayconnectionbar:i:0",
+            "smart sizing:i:1",
+            "use multimon:i:0",
+            # Credenziali
+            "prompt for credentials:i:0",
+            "promptcredentialonce:i:0",
+            f"authentication level:i:{auth_level}",
+            f"enablecredsspsupport:i:{enablecredsspsupport}",
+            # Soppressione avvisi Windows
+            f"gatewayusagemethod:i:0",
+            f"gatewaycredentialssource:i:4",
+            f"gatewayprofileusagemethod:i:0",
+            # Reindirizzamento
+            f"redirectclipboard:i:{redir_clipboard}",
+            f"redirectdrives:i:{'1' if opts and opts.redirect_drives else '0'}",
+            f"redirectprinters:i:{redir_printers}",
+            f"redirectcomports:i:{redir_serial}",
+            f"redirectsmartcards:i:{redir_smartcard}",
+            f"audiomode:i:{audio_mode}",
+            f"audiocapturemode:i:{mic_mode}",
+            f"drivestoredirect:s:{redir_drives}",
+            # Qualità
+            "allow font smoothing:i:1",
+            "allow desktop composition:i:1",
+            "disable themes:i:0",
+            "disable wallpaper:i:1",
+            "disable full window drag:i:1",
+            "disable menu anims:i:1",
+            "disable cursor setting:i:0",
         ]
         if user_str.strip():
             lines.append(f"username:s:{user_str}")
