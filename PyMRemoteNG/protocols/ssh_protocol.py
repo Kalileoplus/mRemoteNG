@@ -74,14 +74,20 @@ _BOLD_MAP = {30: 90, 31: 91, 32: 92, 33: 93, 34: 94, 35: 95, 36: 96, 37: 97}
 # Terminale VT100/xterm-256color
 # ─────────────────────────────────────────────────────────
 class VT100Terminal(QPlainTextEdit):
-    # Cattura: CSI (params + lettera), OSC, charset, keypad, cursore singolo
+    """
+    Terminale xterm-256color su QPlainTextEdit.
+
+    Approccio block-based: document().lastBlock() è SEMPRE la riga corrente
+    (quella in input/scrittura). Non si tracciano posizioni assolute — queste
+    si invalidano appena il documento cambia e causano cancellazioni casuali.
+    """
     _ANSI = re.compile(
         r'\x1b(?:'
-        r'\[([0-9;?]*)([A-Za-z])'      # CSI — gruppo 1=params, 2=lettera
-        r'|\][^\x07\x1b]*(?:\x07|\x1b\\)'  # OSC (title etc.)
-        r'|[()][AB012]'                 # charset designation
-        r'|[=>]'                        # keypad mode
-        r'|[MNOABC-Z\\]'               # cursore/single-char ESC
+        r'\[([0-9;?]*)([A-Za-z])'
+        r'|\][^\x07\x1b]*(?:\x07|\x1b\\)'
+        r'|[()][AB012]'
+        r'|[=>]'
+        r'|[MNOABC-Z\\]'
         r')'
     )
 
@@ -97,7 +103,6 @@ class VT100Terminal(QPlainTextEdit):
         self._cur_col  = 0
         self._cur_fg   = _DEFAULT_FG
         self._bold     = False
-        self._partial_start: int | None = None
 
         self.setReadOnly(False)
         self.setUndoRedoEnabled(False)
@@ -121,14 +126,17 @@ class VT100Terminal(QPlainTextEdit):
         """)
         self.setCursorWidth(10)
 
+        # 40 ms ≈ 25 fps — abbastanza fluido per un terminale
         self._flush_timer = QTimer(self)
-        self._flush_timer.setInterval(80)
+        self._flush_timer.setInterval(40)
         self._flush_timer.timeout.connect(self._flush_line_buffer)
         self._flush_timer.start()
 
     def _avail_fonts(self):
         from PyQt6.QtGui import QFontDatabase
         return QFontDatabase.families()
+
+    # ── Dati in ingresso ─────────────────────────────────────
 
     def process_ssh_data(self, data: bytes):
         try:
@@ -142,7 +150,6 @@ class VT100Terminal(QPlainTextEdit):
         while i < len(text):
             ch = text[i]
 
-            # ── Sequenze ESC ────────────────────────────────────────
             if ch == '\x1b':
                 m = self._ANSI.match(text, i)
                 if m:
@@ -154,22 +161,15 @@ class VT100Terminal(QPlainTextEdit):
                 i += 1
                 continue
 
-            # ── Controllo ───────────────────────────────────────────
             if ch == '\r':
                 if i + 1 < len(text) and text[i + 1] == '\n':
                     self._commit_line()
                     i += 2
                 else:
-                    # \r singolo: azzera la riga corrente (progress bar, ecc.)
+                    # \r solo: riporta all'inizio della riga (progress bar, ecc.)
                     self._cur_parts = [("", self._cur_fg)]
                     self._cur_col   = 0
-                    # Sovrascrivi la riga parziale già disegnata
-                    if self._partial_start is not None:
-                        cursor = self.textCursor()
-                        cursor.setPosition(self._partial_start)
-                        cursor.movePosition(QTextCursor.MoveOperation.End,
-                                            QTextCursor.MoveMode.KeepAnchor)
-                        cursor.removeSelectedText()
+                    self._redraw_last_block()   # cancella subito la riga nel doc
                     i += 1
                 continue
 
@@ -179,7 +179,6 @@ class VT100Terminal(QPlainTextEdit):
                 continue
 
             if ch == '\x08':
-                # Backspace
                 for j in range(len(self._cur_parts) - 1, -1, -1):
                     if self._cur_parts[j][0]:
                         t, c = self._cur_parts[j]
@@ -190,7 +189,7 @@ class VT100Terminal(QPlainTextEdit):
                 i += 1
                 continue
 
-            if ch == '\x07':  # BEL — ignora
+            if ch == '\x07':
                 i += 1
                 continue
 
@@ -199,60 +198,155 @@ class VT100Terminal(QPlainTextEdit):
             i += 1
 
     def _handle_csi(self, params: str, letter: str):
-        """Interpreta la sequenza CSI già parsata."""
         if letter == "m":
             self._process_sgr(params)
 
         elif letter in ("H", "f"):
-            # Cursor Position — nel nostro terminale "line-based" lo trattiamo
-            # solo come clear-to-bottom quando arriva dopo ESC[2J
-            pass
+            pass   # cursor pos — ignorato nel terminale line-based
 
         elif letter == "J":
-            # Erase Display
             p = params or "0"
             if p in ("2", "3"):
-                # ESC[2J o ESC[3J: cancella tutto lo schermo
+                # ESC[2J / ESC[3J: pulisce schermo
                 self._flush_timer.stop()
                 self.clear()
-                self._partial_start = None
                 self._cur_parts = [("", self._cur_fg)]
                 self._cur_col   = 0
                 self._flush_timer.start()
 
         elif letter == "K":
-            # Erase Line
+            # ESC[K / ESC[0K / ESC[2K: cancella riga corrente
             p = params or "0"
-            if p == "0":
-                # Cancella da cursore a fine riga → azzera buffer corrente
+            if p in ("0", "1", "2"):
                 self._cur_parts = [("", self._cur_fg)]
                 self._cur_col   = 0
-                if self._partial_start is not None:
-                    cursor = self.textCursor()
-                    cursor.setPosition(self._partial_start)
-                    cursor.movePosition(QTextCursor.MoveOperation.End,
-                                        QTextCursor.MoveMode.KeepAnchor)
-                    cursor.removeSelectedText()
-            elif p == "2":
-                # Cancella tutta la riga
-                self._cur_parts = [("", self._cur_fg)]
-                self._cur_col   = 0
-                if self._partial_start is not None:
-                    cursor = self.textCursor()
-                    cursor.setPosition(self._partial_start)
-                    cursor.movePosition(QTextCursor.MoveOperation.End,
-                                        QTextCursor.MoveMode.KeepAnchor)
-                    cursor.removeSelectedText()
+                self._redraw_last_block()
 
-        elif letter == "A":
-            pass  # cursor up — non supportato nel terminale line-based
-        elif letter == "B":
-            pass  # cursor down
-        elif letter == "C":
-            pass  # cursor right
-        elif letter == "D":
-            pass  # cursor left
-        # Altre sequenze CSI ignorate silenziosamente
+        # Movimenti cursore ignorati silenziosamente
+        elif letter in ("A", "B", "C", "D", "E", "F", "G",
+                        "S", "T", "d", "n", "r", "s", "u"):
+            pass
+
+    # ── Rendering block-based ────────────────────────────────
+
+    def _redraw_last_block(self):
+        """
+        Riscrive SOLO l'ultimo blocco del documento con il contenuto di
+        _cur_parts. Non tocca mai i blocchi già committati.
+
+        Usa document().lastBlock() invece di coordinate assolute: le coordinate
+        assolute si invalidano ogni volta che il documento cambia, causando
+        sovrascritture casuali. lastBlock() è sempre stabile.
+        """
+        doc        = self.document()
+        last_block = doc.lastBlock()
+
+        cursor = QTextCursor(doc)
+        # Seleziona l'intero contenuto dell'ultimo blocco (senza il separatore)
+        cursor.setPosition(last_block.position())
+        cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock,
+                            QTextCursor.MoveMode.KeepAnchor)
+
+        cursor.beginEditBlock()
+        inserted = False
+        for part_text, part_color in self._cur_parts:
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor(part_color))
+            if not inserted:
+                # La prima insertText sostituisce la selezione (= vecchio testo)
+                cursor.insertText(part_text, fmt)
+                inserted = True
+            elif part_text:
+                cursor.insertText(part_text, fmt)
+        if not inserted:
+            cursor.removeSelectedText()
+        cursor.endEditBlock()
+
+        # Aggiorna il cursore visibile solo se l'utente non sta selezionando
+        if not self.textCursor().hasSelection():
+            self.setTextCursor(cursor)
+            self.ensureCursorVisible()
+
+    def _commit_line(self):
+        """Chiude la riga corrente con \n e prepara quella successiva."""
+        doc        = self.document()
+        last_block = doc.lastBlock()
+
+        cursor = QTextCursor(doc)
+        cursor.setPosition(last_block.position())
+        cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock,
+                            QTextCursor.MoveMode.KeepAnchor)
+
+        cursor.beginEditBlock()
+        inserted = False
+        for part_text, part_color in self._cur_parts:
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor(part_color))
+            if not inserted:
+                cursor.insertText(part_text, fmt)
+                inserted = True
+            elif part_text:
+                cursor.insertText(part_text, fmt)
+        if not inserted:
+            cursor.removeSelectedText()
+        # Aggiungi la newline di fine riga
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(_DEFAULT_FG))
+        cursor.insertText("\n", fmt)
+        cursor.endEditBlock()
+
+        self._cur_parts = [("", self._cur_fg)]
+        self._cur_col   = 0
+
+        if not self.textCursor().hasSelection():
+            self.setTextCursor(cursor)
+            self.ensureCursorVisible()
+
+    def _flush_line_buffer(self):
+        """Chiamato dal timer ogni 40 ms: aggiorna il prompt/riga parziale."""
+        self._redraw_last_block()
+
+    # ── Testo di sistema (messaggi interni) ──────────────────
+
+    def write_system(self, text: str, color: str = "#888888"):
+        """
+        Inserisce un messaggio di sistema nel documento.
+        Se c'è una riga parziale attiva (prompt), la commita prima.
+        """
+        # Se il last block ha già del testo (es. prompt parziale), committarlo
+        last_block = self.document().lastBlock()
+        if last_block.text():
+            # Commita la riga parziale esistente aggiungendo \n
+            cursor = QTextCursor(self.document())
+            cursor.setPosition(last_block.position()
+                               + len(last_block.text()))
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor(_DEFAULT_FG))
+            cursor.insertText("\n", fmt)
+
+        # Inserisce il messaggio nell'ultimo blocco (ora vuoto)
+        text_clean = text.replace('\r\n', '\n').replace('\r', '\n')
+        if not text_clean.endswith('\n'):
+            text_clean += '\n'   # garantisce che il last block rimanga vuoto dopo
+
+        last_block = self.document().lastBlock()
+        cursor = QTextCursor(self.document())
+        cursor.setPosition(last_block.position())
+
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        cursor.insertText(text_clean, fmt)
+
+        self.setTextCursor(cursor)
+        self.ensureCursorVisible()
+        self._cur_parts = [("", self._cur_fg)]
+        self._cur_col   = 0
+
+    def write_info(self, text: str):    self.write_system(text, "#888888")
+    def write_success(self, text: str): self.write_system(text, "#4EC94E")
+    def write_error(self, text: str):   self.write_system(text, "#F14C4C")
+
+    # ── Inserimento caratteri ────────────────────────────────
 
     def _add_char(self, ch: str):
         if self._cur_parts and self._cur_parts[-1][1] == self._cur_fg:
@@ -261,6 +355,8 @@ class VT100Terminal(QPlainTextEdit):
         else:
             self._cur_parts.append((ch, self._cur_fg))
         self._cur_col += 1
+
+    # ── SGR / colori ANSI ────────────────────────────────────
 
     def _process_sgr(self, params: str):
         if not params or params == "0":
@@ -313,65 +409,7 @@ class VT100Terminal(QPlainTextEdit):
         gray = (n - 232) * 10 + 8
         return f"#{gray:02X}{gray:02X}{gray:02X}"
 
-    def _set_partial(self, finalize: bool = False):
-        cursor = self.textCursor()
-        if self._partial_start is None:
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            self._partial_start = cursor.position()
-        else:
-            doc_len = self.document().characterCount()
-            pos = min(self._partial_start, max(0, doc_len - 1))
-            cursor.setPosition(pos)
-            cursor.movePosition(QTextCursor.MoveOperation.End,
-                                QTextCursor.MoveMode.KeepAnchor)
-        cursor.beginEditBlock()
-        first = True
-        for part_text, part_color in self._cur_parts:
-            if not part_text and not first:
-                continue
-            fmt = QTextCharFormat()
-            fmt.setForeground(QColor(part_color))
-            cursor.insertText(part_text, fmt)
-            first = False
-        if finalize:
-            reset = QTextCharFormat()
-            reset.setForeground(QColor(_DEFAULT_FG))
-            cursor.insertText("\n", reset)
-            self._partial_start = None
-        cursor.endEditBlock()
-        self.setTextCursor(cursor)
-        self.ensureCursorVisible()
-
-    def _commit_line(self):
-        self._set_partial(finalize=True)
-        self._cur_parts = [("", self._cur_fg)]
-        self._cur_col   = 0
-
-    def _flush_line_buffer(self):
-        if not any(p[0] for p in self._cur_parts):
-            return
-        self._set_partial(finalize=False)
-
-    def write_system(self, text: str, color: str = "#888888"):
-        text = text.replace('\r\n', '\n').replace('\r', '\n')
-        cursor = self.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor(color))
-        cursor.setCharFormat(fmt)
-        cursor.insertText(text)
-        reset = QTextCharFormat()
-        reset.setForeground(QColor("#CCCCCC"))
-        cursor.setCharFormat(reset)
-        self.setTextCursor(cursor)
-        self.ensureCursorVisible()
-        self._partial_start = None
-        self._cur_parts = [("", self._cur_fg)]
-        self._cur_col   = 0
-
-    def write_info(self, text: str):    self.write_system(text, "#888888")
-    def write_success(self, text: str): self.write_system(text, "#4EC94E")
-    def write_error(self, text: str):   self.write_system(text, "#F14C4C")
+    # ── Canale SSH ───────────────────────────────────────────
 
     def set_channel(self, channel: paramiko.Channel):
         self._channel = channel
@@ -384,6 +422,8 @@ class VT100Terminal(QPlainTextEdit):
         self._login_pw_mode = pending_password
         self._login_cb      = cb
         self._login_buf     = ""
+
+    # ── Input utente ─────────────────────────────────────────
 
     def keyPressEvent(self, e):
         key  = e.key()
