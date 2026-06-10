@@ -54,8 +54,10 @@ def _parse_node(element: ET.Element, parent=None) -> Optional[ConnectionInfo]:
     node.password = _get(a, "Password", "")   # già cifrato
     node.domain   = _get(a, "Domain", "")
 
-    # Protocollo
+    # Protocollo (SSH1 rimappato a SSH2 per retrocompatibilità)
     proto_str = _get(a, "Protocol", "RDP")
+    if proto_str == "SSH1":
+        proto_str = "SSH2"
     try:
         node.protocol = ProtocolType(proto_str)
     except ValueError:

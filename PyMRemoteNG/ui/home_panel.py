@@ -23,7 +23,6 @@ class ConnectionCard(QFrame):
     PROTO_COLORS = {
         "RDP":  "#007ACC",
         "SSH2": "#00AA44",
-        "SSH1": "#00AA44",
         "VNC":  "#AA5500",
         "HTTP": "#AA0099",
         "HTTPS":"#AA0099",

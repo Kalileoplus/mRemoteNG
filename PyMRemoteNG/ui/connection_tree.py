@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 # Colori per protocollo
 # ─────────────────────────────────────────────────────────────
 PROTO_COLOR = {
-    "SSH2": "#4EC94E", "SSH1": "#4EC94E",
+    "SSH2": "#4EC94E",
     "RDP":  "#4E9EEC",
     "VNC":  "#EC8C4E", "ARD": "#EC8C4E",
     "HTTP": "#A78FEC", "HTTPS": "#A78FEC",
@@ -35,7 +35,7 @@ PROTO_COLOR = {
 }
 
 PROTO_SHORT = {
-    "SSH2": "SSH", "SSH1": "SSH1",
+    "SSH2": "SSH",
     "RDP": "RDP", "VNC": "VNC", "ARD": "ARD",
     "HTTP": "HTTP", "HTTPS": "TLS",
     "Telnet": "TEL", "Rlogin": "RLG", "RAW": "RAW",

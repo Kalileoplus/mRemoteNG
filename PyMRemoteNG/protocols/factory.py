@@ -16,7 +16,7 @@ def create_protocol(info: 'ConnectionInfo', parent: QWidget) -> ProtocolBase:
     """Istanzia il protocollo corretto per la connessione."""
     p = info.protocol
 
-    if p in (ProtocolType.SSH2, ProtocolType.SSH1):
+    if p == ProtocolType.SSH2:
         from protocols.ssh_protocol import SSHProtocol
         return SSHProtocol(info, parent)
 

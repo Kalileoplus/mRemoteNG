@@ -32,9 +32,12 @@ def _form_group(title: str) -> tuple[QGroupBox, QFormLayout]:
         }}
     """)
     form = QFormLayout(box)
-    form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-    form.setSpacing(8)
-    form.setContentsMargins(12, 16, 12, 12)
+    form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+    form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+    form.setSpacing(9)
+    form.setContentsMargins(14, 18, 14, 14)
+    form.setHorizontalSpacing(12)
     return box, form
 
 
@@ -94,11 +97,13 @@ class ConnectionDialog(QDialog):
         self._is_new = connection_info is None
         self.conn = connection_info or ConnectionInfo()
         self.setWindowTitle("Nuova Connessione" if self._is_new else f"Modifica: {self.conn.name}")
-        self.setMinimumSize(620, 580)
+        self.setMinimumSize(640, 560)
+        self.resize(700, 620)
         self.setModal(True)
         self.setStyleSheet(f"QDialog {{ background-color: {CARD_COLOR}; color: {TEXT_COLOR}; }}")
         self._setup_ui()
         self._load_data()
+        self._update_tab_visibility(self.conn.protocol.value)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -525,6 +530,27 @@ class ConnectionDialog(QDialog):
                 self.f_port.setValue(port)
         except ValueError:
             pass
+        self._update_tab_visibility(proto)
+
+    def _update_tab_visibility(self, proto: str):
+        """Mostra/nasconde le tab in base al protocollo selezionato."""
+        # Tab indices: 0=Protocollo, 1=Credenziali, 2=RDP, 3=RD Gateway,
+        #              4=Schermo, 5=Redirect, 6=VNC, 7=Altro
+        rdp_only  = {2, 3, 4, 5}   # tab solo per RDP
+        vnc_only  = {6}             # tab solo per VNC/ARD
+        is_rdp    = proto == "RDP"
+        is_vnc    = proto in ("VNC", "ARD")
+        for i in rdp_only:
+            self.tabs.setTabVisible(i, is_rdp)
+        for i in vnc_only:
+            self.tabs.setTabVisible(i, is_vnc)
+        # Se la tab selezionata è ora nascosta, torna alla prima visibile
+        cur = self.tabs.currentIndex()
+        if not self.tabs.isTabVisible(cur):
+            for i in range(self.tabs.count()):
+                if self.tabs.isTabVisible(i):
+                    self.tabs.setCurrentIndex(i)
+                    break
 
     def _on_accept(self):
         c = self.conn
@@ -617,7 +643,7 @@ def _default_port(protocol) -> int:
     from core.models import ProtocolType
     mapping = {
         ProtocolType.RDP: 3389, ProtocolType.VNC: 5900, ProtocolType.ARD: 5900,
-        ProtocolType.SSH1: 22, ProtocolType.SSH2: 22, ProtocolType.Telnet: 23,
+        ProtocolType.SSH2: 22, ProtocolType.Telnet: 23,
         ProtocolType.Rlogin: 513, ProtocolType.RAW: 23,
         ProtocolType.HTTP: 80, ProtocolType.HTTPS: 443, ProtocolType.PowerShell: 5985,
     }

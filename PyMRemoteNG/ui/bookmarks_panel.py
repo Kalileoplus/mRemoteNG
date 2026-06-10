@@ -24,7 +24,7 @@ BOOKMARKS_PATH = os.path.join(
 )
 
 PROTO_ICON = {
-    "SSH2": "🟢", "SSH1": "🟢", "RDP": "🔵",
+    "SSH2": "🟢", "RDP": "🔵",
     "VNC": "🟠", "ARD": "🟠",
     "HTTP": "🌐", "HTTPS": "🔒",
     "Telnet": "🟡",
@@ -57,7 +57,7 @@ class BookmarkDialog(QDialog):
         self.user_edit = field("root")
 
         self.proto_combo = QComboBox()
-        for p in ["SSH2", "SSH1", "RDP", "VNC", "Telnet", "HTTP", "HTTPS"]:
+        for p in ["SSH2", "RDP", "VNC", "Telnet", "HTTP", "HTTPS"]:
             self.proto_combo.addItem(p)
         self.proto_combo.setStyleSheet(f"""
             QComboBox {{ background:#0C0C0C; color:{TEXT_COLOR}; border:1px solid #333; border-radius:3px; padding:2px 6px; }}
@@ -111,7 +111,7 @@ class BookmarkDialog(QDialog):
             self.folder_combo.setCurrentIndex(max(0, fidx))
 
     def _update_port(self, proto: str):
-        defaults = {"SSH2": 22, "SSH1": 22, "RDP": 3389, "VNC": 5900,
+        defaults = {"SSH2": 22, "RDP": 3389, "VNC": 5900,
                     "Telnet": 23, "HTTP": 80, "HTTPS": 443}
         self.port_spin.setValue(defaults.get(proto, 22))
 

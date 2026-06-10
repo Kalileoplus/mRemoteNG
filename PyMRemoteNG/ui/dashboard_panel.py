@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 from themes.dark_theme import ACCENT_COLOR, BG_COLOR, CARD_COLOR, TEXT_COLOR, SUB_COLOR
 
 _PROTO_COLOR = {
-    "SSH2": "#4EC94E", "SSH1": "#4EC94E",
+    "SSH2": "#4EC94E",
     "RDP":  "#4E9EEC",
     "VNC":  "#EC8C4E", "ARD": "#EC8C4E",
     "HTTP": "#A78FEC", "HTTPS": "#A78FEC",

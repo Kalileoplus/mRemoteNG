@@ -242,7 +242,7 @@ class _ActiveSessionsBar(QWidget):
     close_requested = pyqtSignal(str)   # conn_id
 
     _PROTO_COLORS = {
-        "SSH2": "#4EC94E", "SSH1": "#4EC94E", "RDP": "#4E9EEC",
+        "SSH2": "#4EC94E", "RDP": "#4E9EEC",
         "VNC": "#EC8C4E", "HTTP": "#A78FEC", "HTTPS": "#A78FEC",
         "Telnet": "#E0C44E",
     }
@@ -401,7 +401,8 @@ class MainWindow(QMainWindow):
         m2 = menu("Sessions")
         m2.addAction("Salva sessioni\tCtrl+S",
                      self._save_connections).setShortcut("Ctrl+S")
-        m2.addAction("Importa sessioni...", self._open_file)
+        m2.addAction("Importa sessioni XML...", self._open_file)
+        m2.addAction("Importa da MobaXterm...", self._on_import_mobaxterm)
         m2.addSeparator()
         m2.addAction("Chiudi tutte le sessioni", self._close_all_connections)
 
@@ -1008,6 +1009,34 @@ class MainWindow(QMainWindow):
             self._conns_path = path
             self._load_connections()
 
+    def _on_import_mobaxterm(self):
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        from config.mobaxterm_importer import import_into_root
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Importa sessioni MobaXterm", "",
+            "MobaXterm Sessions (*.mxtsessions);;All Files (*)")
+        if not path:
+            return
+        try:
+            count = import_into_root(self._root, path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Errore import", str(exc))
+            return
+        if count == 0:
+            QMessageBox.information(self, "Import MobaXterm",
+                                    "Nessuna connessione trovata nel file.")
+            return
+        self.tree_panel.refresh()
+        self.home_panel.set_connections(self._root.get_all_connections_recursive())
+        if hasattr(self, "_tools_panel"):
+            self._tools_panel.set_connections(self._root.get_all_connections_recursive())
+        self._save_connections()
+        self._set_status(f"Importate {count} connessioni da MobaXterm")
+        ToastManager.get_instance().show(
+            "success", "Import MobaXterm completato",
+            f"{count} connessioni importate"
+        )
+
     def _on_open_connection(self, conn: ConnectionInfo):
         from core.models import ContainerInfo, RootNode
         if isinstance(conn, (ContainerInfo, RootNode)):
@@ -1019,7 +1048,7 @@ class MainWindow(QMainWindow):
                     return
         tab = ConnectionTab(conn, self)
         proto = conn.protocol.value
-        icon_map = {"SSH2":"🟢","SSH1":"🟢","RDP":"🔵","VNC":"🟠",
+        icon_map = {"SSH2":"🟢","RDP":"🔵","VNC":"🟠",
                     "HTTP":"🟣","HTTPS":"🟣","Telnet":"🟡"}
         icon = icon_map.get(proto, "⚪")
         title = f"{icon} {conn.name}"
@@ -1375,7 +1404,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(self, "PyMRemoteNG",
             "<b>PyMRemoteNG</b><br>Multi-protocol remote connection manager<br>"
             "Ispirato a MobaXterm<br><br>"
-            "<b>Protocolli:</b> SSH2, SSH1, RDP, VNC, Telnet, HTTP/HTTPS<br>"
+            "<b>Protocolli:</b> SSH, RDP, VNC, Telnet, HTTP/HTTPS<br>"
             "<b>UI:</b> PyQt6  |  <b>SSH:</b> paramiko")
 
     def _set_status(self, text: str):

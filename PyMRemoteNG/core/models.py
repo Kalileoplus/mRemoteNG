@@ -11,7 +11,6 @@ import uuid
 class ProtocolType(str, Enum):
     RDP       = "RDP"
     VNC       = "VNC"
-    SSH1      = "SSH1"
     SSH2      = "SSH2"
     Telnet    = "Telnet"
     Rlogin    = "Rlogin"
@@ -241,7 +240,6 @@ class ConnectionInfo:
             ProtocolType.RDP: 3389,
             ProtocolType.VNC: 5900,
             ProtocolType.ARD: 5900,
-            ProtocolType.SSH1: 22,
             ProtocolType.SSH2: 22,
             ProtocolType.Telnet: 23,
             ProtocolType.Rlogin: 513,

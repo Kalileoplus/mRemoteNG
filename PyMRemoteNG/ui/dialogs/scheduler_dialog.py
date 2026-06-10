@@ -71,7 +71,7 @@ class TaskEditDialog(QDialog):
         form.addRow("Data/Ora esecuzione:", self._dt_edit)
 
         self._proto_combo = QComboBox()
-        self._proto_combo.addItems(["SSH2", "SSH1", "Telnet"])
+        self._proto_combo.addItems(["SSH2", "Telnet"])
         form.addRow("Protocollo:", self._proto_combo)
 
         layout.addLayout(form)
