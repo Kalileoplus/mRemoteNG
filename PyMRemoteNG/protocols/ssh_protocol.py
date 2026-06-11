@@ -103,6 +103,9 @@ class VT100Terminal(QPlainTextEdit):
         self._cur_col  = 0
         self._cur_fg   = _DEFAULT_FG
         self._bold     = False
+        # Testo dell'ultima riga visualizzata: usato per evitare setTextCursor()
+        # ridondanti che resettano il ciclo di blink Qt ogni 40ms
+        self._last_rendered = ""
 
         self.setReadOnly(False)
         self.setUndoRedoEnabled(False)
@@ -167,9 +170,10 @@ class VT100Terminal(QPlainTextEdit):
                     i += 2
                 else:
                     # \r solo: riporta all'inizio della riga (progress bar, ecc.)
-                    self._cur_parts = [("", self._cur_fg)]
-                    self._cur_col   = 0
-                    self._redraw_last_block()   # cancella subito la riga nel doc
+                    self._cur_parts     = [("", self._cur_fg)]
+                    self._cur_col       = 0
+                    self._last_rendered = ""
+                    self._redraw_last_block()
                     i += 1
                 continue
 
@@ -207,17 +211,23 @@ class VT100Terminal(QPlainTextEdit):
         elif letter == "J":
             p = params or "0"
             if p in ("2", "3"):
-                # ESC[2J / ESC[3J: pulisce schermo
                 self._flush_timer.stop()
                 self.clear()
-                self._cur_parts = [("", self._cur_fg)]
-                self._cur_col   = 0
+                self._cur_parts     = [("", self._cur_fg)]
+                self._cur_col       = 0
+                self._last_rendered = ""
                 self._flush_timer.start()
 
         elif letter == "K":
-            # ESC[K / ESC[0K / ESC[2K: cancella riga corrente
             p = params or "0"
-            if p in ("0", "1", "2"):
+            if p in ("", "0"):
+                # ESC[K / ESC[0K: cancella da cursore a fine riga
+                # Tronca _cur_parts al numero di caratteri al cursore corrente,
+                # lasciando intatto tutto ciò che precede il cursore.
+                self._truncate_at_col(self._cur_col)
+                self._redraw_last_block()
+            elif p == "2":
+                # ESC[2K: cancella intera riga
                 self._cur_parts = [("", self._cur_fg)]
                 self._cur_col   = 0
                 self._redraw_last_block()
@@ -229,81 +239,89 @@ class VT100Terminal(QPlainTextEdit):
 
     # ── Rendering block-based ────────────────────────────────
 
-    def _redraw_last_block(self):
-        """
-        Riscrive SOLO l'ultimo blocco del documento con il contenuto di
-        _cur_parts. Non tocca mai i blocchi già committati.
+    def _truncate_at_col(self, col: int):
+        """Tronca _cur_parts in modo che il testo visibile sia al massimo `col` caratteri."""
+        if col <= 0:
+            self._cur_parts = [("", self._cur_fg)]
+            self._cur_col   = 0
+            return
+        new_parts: list[tuple[str, str]] = []
+        remaining = col
+        for part_text, part_color in self._cur_parts:
+            if remaining <= 0:
+                break
+            take = min(len(part_text), remaining)
+            new_parts.append((part_text[:take], part_color))
+            remaining -= take
+        self._cur_parts = new_parts or [("", self._cur_fg)]
+        self._cur_col   = col
 
-        Usa document().lastBlock() invece di coordinate assolute: le coordinate
-        assolute si invalidano ogni volta che il documento cambia, causando
-        sovrascritture casuali. lastBlock() è sempre stabile.
-        """
-        doc        = self.document()
-        last_block = doc.lastBlock()
-
-        cursor = QTextCursor(doc)
-        # Seleziona l'intero contenuto dell'ultimo blocco (senza il separatore)
-        cursor.setPosition(last_block.position())
-        cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock,
-                            QTextCursor.MoveMode.KeepAnchor)
-
-        cursor.beginEditBlock()
+    def _render_parts_to_cursor(self, cursor: QTextCursor):
+        """Scrive _cur_parts nel cursore (sostituisce selezione esistente)."""
         inserted = False
         for part_text, part_color in self._cur_parts:
             fmt = QTextCharFormat()
             fmt.setForeground(QColor(part_color))
             if not inserted:
-                # La prima insertText sostituisce la selezione (= vecchio testo)
-                cursor.insertText(part_text, fmt)
+                cursor.insertText(part_text, fmt)   # sostituisce selezione
                 inserted = True
             elif part_text:
                 cursor.insertText(part_text, fmt)
         if not inserted:
             cursor.removeSelectedText()
+
+    def _redraw_last_block(self):
+        """
+        Riscrive SOLO l'ultimo blocco del documento con _cur_parts.
+        setTextCursor viene chiamato solo quando il testo cambia effettivamente,
+        per evitare che il reset del ciclo di blink Qt causi sfarfallio.
+        """
+        new_text = "".join(p[0] for p in self._cur_parts)
+
+        doc        = self.document()
+        last_block = doc.lastBlock()
+        cursor     = QTextCursor(doc)
+        cursor.setPosition(last_block.position())
+        cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock,
+                            QTextCursor.MoveMode.KeepAnchor)
+
+        cursor.beginEditBlock()
+        self._render_parts_to_cursor(cursor)
         cursor.endEditBlock()
 
-        # Aggiorna il cursore visibile solo se l'utente non sta selezionando
-        if not self.textCursor().hasSelection():
+        # Sposta il cursore widget solo quando il testo cambia effettivamente
+        # → evita reset del blink timer Qt a 40 ms
+        if new_text != self._last_rendered and not self.textCursor().hasSelection():
+            self._last_rendered = new_text
             self.setTextCursor(cursor)
             self.ensureCursorVisible()
 
     def _commit_line(self):
-        """Chiude la riga corrente con \n e prepara quella successiva."""
+        """Chiude la riga corrente con \n e prepara la successiva."""
         doc        = self.document()
         last_block = doc.lastBlock()
-
-        cursor = QTextCursor(doc)
+        cursor     = QTextCursor(doc)
         cursor.setPosition(last_block.position())
         cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock,
                             QTextCursor.MoveMode.KeepAnchor)
 
         cursor.beginEditBlock()
-        inserted = False
-        for part_text, part_color in self._cur_parts:
-            fmt = QTextCharFormat()
-            fmt.setForeground(QColor(part_color))
-            if not inserted:
-                cursor.insertText(part_text, fmt)
-                inserted = True
-            elif part_text:
-                cursor.insertText(part_text, fmt)
-        if not inserted:
-            cursor.removeSelectedText()
-        # Aggiungi la newline di fine riga
+        self._render_parts_to_cursor(cursor)
         fmt = QTextCharFormat()
         fmt.setForeground(QColor(_DEFAULT_FG))
         cursor.insertText("\n", fmt)
         cursor.endEditBlock()
 
-        self._cur_parts = [("", self._cur_fg)]
-        self._cur_col   = 0
+        self._cur_parts     = [("", self._cur_fg)]
+        self._cur_col       = 0
+        self._last_rendered = ""
 
         if not self.textCursor().hasSelection():
             self.setTextCursor(cursor)
             self.ensureCursorVisible()
 
     def _flush_line_buffer(self):
-        """Chiamato dal timer ogni 40 ms: aggiorna il prompt/riga parziale."""
+        """Chiamato dal timer ogni 40 ms: aggiorna prompt/riga parziale."""
         self._redraw_last_block()
 
     # ── Testo di sistema (messaggi interni) ──────────────────
@@ -339,8 +357,9 @@ class VT100Terminal(QPlainTextEdit):
 
         self.setTextCursor(cursor)
         self.ensureCursorVisible()
-        self._cur_parts = [("", self._cur_fg)]
-        self._cur_col   = 0
+        self._cur_parts     = [("", self._cur_fg)]
+        self._cur_col       = 0
+        self._last_rendered = ""
 
     def write_info(self, text: str):    self.write_system(text, "#888888")
     def write_success(self, text: str): self.write_system(text, "#4EC94E")
@@ -359,6 +378,13 @@ class VT100Terminal(QPlainTextEdit):
     # ── SGR / colori ANSI ────────────────────────────────────
 
     def _process_sgr(self, params: str):
+        """
+        Interpreta sequenze SGR (Select Graphic Rendition).
+        Regola chiave: n=1 (bold) imposta solo il flag; il colore viene aggiornato
+        solo quando arriva un codice di colore (30-37/90-97). Così \x1b[1;34m
+        (bold+blu) produce il corretto blu brillante senza sporcare il colore
+        precedente durante l'elaborazione di "1".
+        """
         if not params or params == "0":
             self._cur_fg = _DEFAULT_FG; self._bold = False; return
         parts = params.split(";")
@@ -372,15 +398,14 @@ class VT100Terminal(QPlainTextEdit):
                 self._cur_fg = _DEFAULT_FG; self._bold = False
             elif n == 1:
                 self._bold = True
-                for code, color in _ANSI_COLORS.items():
-                    if color == self._cur_fg and 30 <= code <= 37:
-                        self._cur_fg = _ANSI_COLORS.get(_BOLD_MAP.get(code, code), color)
-                        break
+                # NON aggiornare _cur_fg qui: il colore viene calcolato
+                # quando arriva il codice di colore (30-37) successivo.
             elif n == 22:
                 self._bold = False
             elif 30 <= n <= 37:
-                base = _ANSI_COLORS[n]
-                self._cur_fg = _ANSI_COLORS.get(_BOLD_MAP.get(n, n), base) if self._bold else base
+                # Colore base: se bold è attivo usa la variante luminosa
+                self._cur_fg = (_ANSI_COLORS.get(_BOLD_MAP.get(n, n), _ANSI_COLORS[n])
+                                if self._bold else _ANSI_COLORS[n])
             elif 90 <= n <= 97:
                 self._cur_fg = _ANSI_COLORS[n]
             elif n == 39:
