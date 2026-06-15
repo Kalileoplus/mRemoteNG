@@ -10,7 +10,8 @@ from typing import Dict, Optional, Set, TYPE_CHECKING
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
     QMenu, QLineEdit, QHBoxLayout, QLabel, QPushButton,
-    QAbstractItemView, QStyledItemDelegate, QApplication, QStyle
+    QAbstractItemView, QStyledItemDelegate, QApplication, QStyle,
+    QFileDialog, QMessageBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QSize, QRect, QRectF
 from PyQt6.QtGui import (
@@ -334,7 +335,6 @@ class ConnectionTreePanel(QWidget):
     delete_requested         = pyqtSignal(object)
     rename_requested         = pyqtSignal(object)
     edit_requested           = pyqtSignal(object)
-    add_to_bookmarks         = pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -370,6 +370,44 @@ class ConnectionTreePanel(QWidget):
             hl.addWidget(self._tool_btn(icon, tip, cb))
         hl.addStretch()
         layout.addWidget(header)
+
+        # Sessioni Attive (sezione collassabile sopra l'albero)
+        self._active_header = QWidget()
+        self._active_header.setFixedHeight(28)
+        self._active_header.setStyleSheet(
+            "background:#161616; border-bottom:1px solid #252525;"
+        )
+        ah_lay = QHBoxLayout(self._active_header)
+        ah_lay.setContentsMargins(6, 0, 6, 0)
+        ah_lay.setSpacing(4)
+        self._active_toggle = QPushButton("▼")
+        self._active_toggle.setFixedSize(16, 16)
+        self._active_toggle.setStyleSheet(
+            "QPushButton{background:transparent;color:#666;border:none;font-size:8px;}"
+            "QPushButton:hover{color:#AAA;}"
+        )
+        self._active_toggle.clicked.connect(self._toggle_active_sessions)
+        self._active_title = QLabel("Sessioni Attive (0)")
+        self._active_title.setStyleSheet(
+            f"color:{SUB_COLOR}; font-size:10px; font-weight:bold; background:transparent;"
+        )
+        ah_lay.addWidget(self._active_toggle)
+        ah_lay.addWidget(self._active_title)
+        ah_lay.addStretch()
+        layout.addWidget(self._active_header)
+
+        self._active_container = QWidget()
+        self._active_container.setStyleSheet("background:#111111;")
+        self._active_vbox = QVBoxLayout(self._active_container)
+        self._active_vbox.setContentsMargins(0, 0, 0, 0)
+        self._active_vbox.setSpacing(0)
+        layout.addWidget(self._active_container)
+
+        # Separatore visivo prima dell'albero connessioni
+        sep = QWidget()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet("background:#2A2A2A;")
+        layout.addWidget(sep)
 
         # Albero
         self.tree = QTreeWidget()
@@ -407,6 +445,8 @@ class ConnectionTreePanel(QWidget):
         """)
         self.tree.itemDoubleClicked.connect(self._on_double_click)
         self.tree.itemClicked.connect(self._on_single_click)
+        self.tree.itemCollapsed.connect(self._on_item_collapsed)
+        self.tree.itemExpanded.connect(self._on_item_expanded)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self.tree)
 
@@ -502,6 +542,41 @@ class ConnectionTreePanel(QWidget):
         self._delegate._ping_status = status
         self.tree.viewport().update()
 
+    def _toggle_active_sessions(self):
+        visible = self._active_container.isVisible()
+        self._active_container.setVisible(not visible)
+        self._active_toggle.setText("▶" if visible else "▼")
+
+    def update_active_sessions(self, open_tabs: dict):
+        """Aggiorna la sezione 'Sessioni Attive' con le tab correntemente aperte."""
+        while self._active_vbox.count():
+            item = self._active_vbox.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        count = len(open_tabs)
+        self._active_title.setText(f"Sessioni Attive ({count})")
+
+        for _conn_id, tab in open_tabs.items():
+            conn = tab.conn
+            proto = conn.protocol.value
+            color = PROTO_COLOR.get(proto, "#888888")
+            short = PROTO_SHORT.get(proto, "??")
+            name  = conn.name[:22] + "…" if len(conn.name) > 22 else conn.name
+            row = QPushButton(f" {short} · {name}")
+            row.setFixedHeight(26)
+            row.setStyleSheet(f"""
+                QPushButton {{
+                    background:transparent; color:{TEXT_COLOR};
+                    border:none; border-left:3px solid {color};
+                    text-align:left; padding:0 8px 0 8px;
+                    font-size:11px;
+                }}
+                QPushButton:hover {{ background:#1A2028; }}
+            """)
+            row.clicked.connect(lambda _, c=conn: self.connection_activated.emit(c))
+            self._active_vbox.addWidget(row)
+
     def refresh(self):
         if self._root:
             connected = set(self._delegate._connected_ids)
@@ -519,7 +594,12 @@ class ConnectionTreePanel(QWidget):
 
     def _on_single_click(self, item, col):
         node = item.data(0, Qt.ItemDataRole.UserRole)
-        if node:
+        if not node:
+            return
+        from core.models import ContainerInfo, RootNode
+        if isinstance(node, (ContainerInfo, RootNode)):
+            item.setExpanded(not item.isExpanded())
+        else:
             self.connection_selected.emit(node)
 
     def _on_double_click(self, item, col):
@@ -527,8 +607,18 @@ class ConnectionTreePanel(QWidget):
         from core.models import ContainerInfo, RootNode
         if node and not isinstance(node, (ContainerInfo, RootNode)):
             self.connection_activated.emit(node)
-        else:
-            item.setExpanded(not item.isExpanded())
+
+    def _on_item_collapsed(self, item):
+        node = item.data(0, Qt.ItemDataRole.UserRole)
+        from core.models import ContainerInfo
+        if isinstance(node, ContainerInfo):
+            node.is_expanded = False
+
+    def _on_item_expanded(self, item):
+        node = item.data(0, Qt.ItemDataRole.UserRole)
+        from core.models import ContainerInfo
+        if isinstance(node, ContainerInfo):
+            node.is_expanded = True
 
     def _show_context_menu(self, pos: QPoint):
         node = self._get_selected_node()
@@ -547,7 +637,6 @@ class ConnectionTreePanel(QWidget):
             connect_label = "⏹  Disconnetti" if is_connected else "▶  Connetti"
             menu.addAction(connect_label, lambda: self.connection_activated.emit(node))
             menu.addSeparator()
-            menu.addAction("★  Aggiungi ai Bookmark", lambda: self.add_to_bookmarks.emit(node))
             menu.addSeparator()
             menu.addAction("✏  Proprietà",    lambda: self.edit_requested.emit(node))
             menu.addAction("📝  Rinomina",     lambda: self.rename_requested.emit(node))
@@ -588,6 +677,24 @@ class ConnectionTreePanel(QWidget):
         self.tree.collapseAll()
         if self.tree.topLevelItemCount() > 0:
             self.tree.topLevelItem(0).setExpanded(True)
+
+    def _on_export_xml(self):
+        if not self._root:
+            QMessageBox.warning(self, "Export", "Nessuna sessione da esportare.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Esporta sessioni", "sessioni_export.xml",
+            "File XML (*.xml);;Tutti i file (*)"
+        )
+        if not path:
+            return
+        try:
+            from config.xml_parser import save_connections
+            save_connections(self._root, path)
+            QMessageBox.information(self, "Export completato",
+                                    f"Sessioni esportate in:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Errore export", str(e))
 
     def _on_search(self, text: str):
         def _visit(item: QTreeWidgetItem) -> bool:

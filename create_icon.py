@@ -1,5 +1,5 @@
 """
-Genera icon.ico per PyMRemoteNG.
+Genera icon.ico per Nexus.
 Design: hub di rete - nodo centrale bianco connesso a 4 nodi ciano su sfondo navy.
 """
 from PIL import Image, ImageDraw, ImageFilter

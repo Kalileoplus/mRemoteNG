@@ -1,10 +1,10 @@
 @echo off
 setlocal EnableDelayedExpansion
-title PyMRemoteNG - Build ^& Package
+title Nexus - Build ^& Package
 
 echo.
 echo  =========================================
-echo   PyMRemoteNG  -  Build EXE + Installer
+echo   Nexus  -  Build EXE + Installer
 echo  =========================================
 echo.
 
@@ -24,6 +24,7 @@ echo       OK
 echo [2/5] Genero icona...
 python "%~dp0create_icon.py"
 if errorlevel 1 ( echo [ERRORE] Generazione icona fallita. & pause & exit /b 1 )
+echo       OK
 
 :: -------------------------------------------------------
 :: 3. Build EXE con PyInstaller
@@ -33,7 +34,7 @@ cd /d "%~dp0PyMRemoteNG"
 if exist dist  rmdir /s /q dist
 if exist build rmdir /s /q build
 
-pyinstaller pymremoteng.spec --noconfirm
+pyinstaller nexus.spec --noconfirm
 if errorlevel 1 ( echo [ERRORE] Build PyInstaller fallita. & pause & exit /b 1 )
 cd /d "%~dp0"
 echo       OK
@@ -42,8 +43,8 @@ echo       OK
 :: 4. Copia cartella shared nel dist
 :: -------------------------------------------------------
 echo [4/5] Copio shared nel pacchetto...
-if not exist "PyMRemoteNG\dist\PyMRemoteNG\shared" mkdir "PyMRemoteNG\dist\PyMRemoteNG\shared"
-copy /Y "shared\confCons.xml.template" "PyMRemoteNG\dist\PyMRemoteNG\shared\" >nul
+if not exist "PyMRemoteNG\dist\Nexus\shared" mkdir "PyMRemoteNG\dist\Nexus\shared"
+copy /Y "shared\confCons.xml.template" "PyMRemoteNG\dist\Nexus\shared\" >nul
 echo       OK
 
 :: -------------------------------------------------------
@@ -69,7 +70,7 @@ if "!ISCC!"=="" (
     echo  Poi rilancia questo script.
     echo.
     echo  L'EXE e' comunque pronto in:
-    echo  PyMRemoteNG\dist\PyMRemoteNG\PyMRemoteNG.exe
+    echo  PyMRemoteNG\dist\Nexus\Nexus.exe
     echo.
     pause
     exit /b 0
@@ -84,8 +85,8 @@ echo  =========================================
 echo   Build completata con successo!
 echo  =========================================
 echo.
-echo   Installer: dist\PyMRemoteNG_Setup.exe
-echo   EXE raw:   PyMRemoteNG\dist\PyMRemoteNG\PyMRemoteNG.exe
+echo   Installer: dist\Nexus_Setup.exe
+echo   EXE raw:   PyMRemoteNG\dist\Nexus\Nexus.exe
 echo.
 pause >nul
 explorer "dist"

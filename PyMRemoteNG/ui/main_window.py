@@ -158,9 +158,7 @@ class VerticalTabBar(QWidget):
 
     TABS = [
         ("Sessions",  "🖥",  "#4EC94E",
-         "Gestione connessioni salvate (SSH, RDP, VNC…)"),
-        ("Bookmarks", "🔖",  "#FFC107",
-         "Segnalibri: connessioni preferite ad accesso rapido"),
+         "Connessioni salvate per categoria (SSH, RDP, VNC…)"),
         ("Tools",     "🔧",  "#5BA8E5",
          "Port Scanner, Ping Monitor, Network Discovery"),
         ("Macros",    "⚡",  "#F5A623",
@@ -454,10 +452,9 @@ class MainWindow(QMainWindow):
 
         # Sessions
         m2 = menu("Sessions")
-        m2.addAction("Salva sessioni\tCtrl+S",
-                     self._save_connections).setShortcut("Ctrl+S")
         m2.addAction("Importa sessioni XML...", self._open_file)
         m2.addAction("Importa da MobaXterm...", self._on_import_mobaxterm)
+        m2.addAction("Esporta sessioni XML...", self._on_export_xml)
         m2.addSeparator()
         m2.addAction("Chiudi tutte le sessioni", self._close_all_connections)
 
@@ -739,9 +736,6 @@ class MainWindow(QMainWindow):
         btn("Tunneling", "tunneling", self._on_tunneling)
         btn("Tools",     "tools",     self._on_show_tools)
         btn("Settings",  "settings",  self._show_settings)
-        tb.addSeparator()
-        btn("Save",      "save",      self._save_connections, "Ctrl+S")
-        btn("Open",      "open",      self._open_file)
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -914,23 +908,16 @@ class MainWindow(QMainWindow):
         self.tree_panel.delete_requested.connect(self._on_delete_connection)
         self.tree_panel.edit_requested.connect(self._on_edit_connection)
         self.tree_panel.rename_requested.connect(self._on_rename_connection)
-        self.tree_panel.add_to_bookmarks.connect(self._on_add_to_bookmarks)
         self._left_stack.addWidget(self.tree_panel)
 
-        # Pagina 1: Bookmarks (con sottocartelle)
-        from ui.bookmarks_panel import BookmarksPanel
-        self._bookmarks_panel = BookmarksPanel()
-        self._bookmarks_panel.connection_activated.connect(self._on_open_connection)
-        self._left_stack.addWidget(self._bookmarks_panel)
-
-        # Pagina 2: Tools (port scanner, ping monitor, discovery)
+        # Pagina 1: Tools (port scanner, ping monitor, discovery)
         from ui.tools_panel import ToolsPanel
         self._tools_panel = ToolsPanel()
         self._tools_panel.hosts_discovered.connect(self._on_hosts_discovered)
         self._tools_panel.ping_monitor.host_down.connect(self._on_host_down)
         self._left_stack.addWidget(self._tools_panel)
 
-        # Pagina 3: Macros
+        # Pagina 2: Macros
         from ui.macros_panel import MacrosPanel
         self._macros_panel = MacrosPanel()
         self._macros_panel.run_macro.connect(self._on_run_macro)
@@ -942,11 +929,6 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
-
-        # ── Barra sessioni attive ──
-        self._sessions_bar = _ActiveSessionsBar()
-        self._sessions_bar.close_requested.connect(self._close_by_conn_id)
-        right_layout.addWidget(self._sessions_bar)
 
         self._tab_bar = _CloseTabBar()
         self._tab_bar.tabCloseRequested.connect(self._on_tab_close)
@@ -1020,10 +1002,9 @@ class MainWindow(QMainWindow):
         self._left_stack.setCurrentIndex(idx)
         # Aggiorna header contestuale
         _info = [
-            ("🖥",  "Sessions",  "Gestione connessioni SSH · RDP · VNC · Telnet",  "#4EC94E"),
-            ("🔖",  "Bookmarks", "Connessioni preferite ad accesso rapido",         "#FFC107"),
-            ("🔧",  "Tools",     "Port Scanner · Ping Monitor · Network Discovery", "#5BA8E5"),
-            ("⚡",  "Macros",    "Comandi automatici da inviare alle sessioni",      "#F5A623"),
+            ("🖥",  "Sessions",  "Categorie e connessioni SSH · RDP · VNC · Telnet", "#4EC94E"),
+            ("🔧",  "Tools",     "Port Scanner · Ping Monitor · Network Discovery",   "#5BA8E5"),
+            ("⚡",  "Macros",    "Comandi automatici da inviare alle sessioni",        "#F5A623"),
         ]
         if 0 <= idx < len(_info):
             icon, name, desc, color = _info[idx]
@@ -1092,6 +1073,25 @@ class MainWindow(QMainWindow):
             f"{count} connessioni importate"
         )
 
+    def _on_export_xml(self):
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        if not self._root:
+            QMessageBox.warning(self, "Export", "Nessuna sessione da esportare.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Esporta sessioni XML", "sessioni_export.xml",
+            "File XML (*.xml);;Tutti i file (*)"
+        )
+        if not path:
+            return
+        try:
+            from config.xml_parser import save_connections
+            save_connections(self._root, path)
+            QMessageBox.information(self, "Export completato",
+                                    f"Sessioni esportate in:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Errore export", str(e))
+
     def _on_open_connection(self, conn: ConnectionInfo):
         from core.models import ContainerInfo, RootNode
         if isinstance(conn, (ContainerInfo, RootNode)):
@@ -1124,7 +1124,7 @@ class MainWindow(QMainWindow):
             self._set_status(f"Connessione a {conn.hostname} in corso...")
         self._update_conn_count()
         self._sync_tree_status()
-        self._sessions_bar.refresh(self._open_tabs)
+        self.tree_panel.update_active_sessions(self._open_tabs)
 
     def _on_select_connection(self, conn):
         from core.models import ContainerInfo, RootNode
@@ -1182,7 +1182,7 @@ class MainWindow(QMainWindow):
         self._update_conn_count()
         self._update_welcome()
         self._sync_tree_status()
-        self._sessions_bar.refresh(self._open_tabs)
+        self.tree_panel.update_active_sessions(self._open_tabs)
 
     def _on_quick_connect(self):
         text = self.quick_box.text().strip()
@@ -1244,12 +1244,6 @@ class MainWindow(QMainWindow):
     # Implementazioni bottoni toolbar
     # ──────────────────────────────────────────
 
-    def _on_add_to_bookmarks(self, conn):
-        """Aggiunge una connessione dal tree ai bookmarks."""
-        self._bookmarks_panel.add_from_connection(conn)
-        self._left_stack.setCurrentIndex(1)
-        self.vtab._on_click(1)
-        self._set_status(f"'{conn.name}' aggiunto ai bookmark")
 
     def _on_split(self):
         """Split: apre la stessa connessione corrente in un secondo pane affiancato."""
