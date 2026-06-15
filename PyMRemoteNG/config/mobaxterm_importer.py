@@ -126,6 +126,8 @@ def import_into_root(root, filepath: str) -> int:
     Crea una ContainerInfo per ogni sezione trovata nel file.
     Ritorna il numero totale di connessioni importate.
     """
+    from config.xml_parser import _rebuild_hierarchy_from_paths
+
     groups = parse_mobaxterm_file(filepath)
     total = 0
     for folder_name, conns in groups:
@@ -142,4 +144,8 @@ def import_into_root(root, filepath: str) -> int:
         for c in conns:
             existing.add_child(c)
             total += 1
+
+    # Ricostruisce la gerarchia da nomi tipo "TIBURTINO\ARSIAL"
+    # in modo che ARSIAL diventi subito una sottocartella di TIBURTINO
+    _rebuild_hierarchy_from_paths(root)
     return total
