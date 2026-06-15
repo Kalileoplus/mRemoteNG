@@ -2,6 +2,8 @@
 SSH Tunneling dialog: port forwarding locale / remoto / dinamico (SOCKS5).
 """
 from __future__ import annotations
+import ipaddress
+import secrets
 import socket
 import threading
 from typing import List
@@ -42,16 +44,45 @@ def _sep() -> QFrame:
     return f
 
 
+def _ip_is_restricted(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (ip.is_loopback or ip.is_private or ip.is_link_local
+            or ip.is_reserved or ip.is_multicast)
+
+
+def _socks5_addr_allowed(addr: str) -> bool:
+    """
+    Blocca indirizzi privati/loopback/link-local (SSRF prevention).
+    TUTTI i record DNS dell'hostname devono essere pubblici — nessun bypass
+    tramite multi-homed host o race condition DNS.
+    """
+    try:
+        return not _ip_is_restricted(ipaddress.ip_address(addr))
+    except ValueError:
+        pass
+    # Hostname: TUTTI i record risolti devono essere pubblici
+    try:
+        records = socket.getaddrinfo(addr, None)
+        if not records:
+            return False
+        return all(
+            not _ip_is_restricted(ipaddress.ip_address(s[4][0]))
+            for s in records
+        )
+    except Exception:
+        return False
+
+
 class TunnelEntry:
     def __init__(self, kind: str, local_port: int,
                  remote_host: str, remote_port: int):
-        self.kind        = kind          # Local | Remote | Dynamic
-        self.local_port  = local_port
-        self.remote_host = remote_host
-        self.remote_port = remote_port
+        self.kind         = kind          # Local | Remote | Dynamic
+        self.local_port   = local_port
+        self.remote_host  = remote_host
+        self.remote_port  = remote_port
+        self.socks5_token = ""           # token per auth SOCKS5 (solo Dynamic)
         self._srv_socket: socket.socket | None = None
         self._thread:     threading.Thread | None = None
-        self.active      = False
+        self.active       = False
 
     def label(self) -> str:
         if self.kind == "Dynamic":
@@ -388,11 +419,23 @@ class TunnelingDialog(QDialog):
             else:  # Dynamic SOCKS5
                 lport = self._socks_port.value()
                 entry = TunnelEntry("Dynamic", lport, "", 0)
+                entry.socks5_token = secrets.token_hex(16)  # token univoco per sessione
                 t = threading.Thread(
                     target=self._dynamic_socks5, args=(entry,), daemon=True
                 )
                 entry._thread = t
                 t.start()
+                # Mostra le credenziali proxy all'utente
+                QMessageBox.information(
+                    self, "Proxy SOCKS5 avviato",
+                    f"Proxy SOCKS5 attivo su 127.0.0.1:{lport}\n\n"
+                    f"Configura il tuo browser o applicazione con:\n"
+                    f"  Host:     127.0.0.1\n"
+                    f"  Porta:    {lport}\n"
+                    f"  Utente:   proxy\n"
+                    f"  Password: {entry.socks5_token}\n\n"
+                    "⚠  Conserva questa password: non viene mostrata di nuovo."
+                )
 
         except Exception as e:
             QMessageBox.warning(self, "Errore", str(e))
@@ -458,37 +501,66 @@ class TunnelingDialog(QDialog):
                 except socket.timeout:
                     continue
                 threading.Thread(
-                    target=self._handle_socks5, args=(client,), daemon=True
+                    target=self._handle_socks5,
+                    args=(client, entry.socks5_token),
+                    daemon=True,
                 ).start()
         except Exception:
             pass
 
-    def _handle_socks5(self, client: socket.socket):
+    def _handle_socks5(self, client: socket.socket, token: str):
+        """SOCKS5 con autenticazione username/password (RFC 1929). VULN-14 fix."""
         try:
-            # SOCKS5 handshake
+            # ── Handshake: richiedi obbligatoriamente il metodo 2 (user/pass) ──
             header = client.recv(2)
             if not header or header[0] != 5:
                 client.close(); return
             nmethods = header[1]
-            client.recv(nmethods)
-            client.send(b'\x05\x00')  # no auth
+            methods  = set(client.recv(nmethods))
+            if 0x02 not in methods:
+                client.send(b'\x05\xFF')  # nessun metodo accettabile
+                client.close(); return
+            client.send(b'\x05\x02')      # seleziona metodo 2
 
+            # ── Sub-autenticazione RFC 1929 ───────────────────────────────────
+            ver = client.recv(1)
+            if not ver or ver[0] != 1:
+                client.close(); return
+            ulen     = client.recv(1)[0]
+            _        = client.recv(ulen)   # username ignorato
+            plen     = client.recv(1)[0]
+            password = client.recv(plen).decode('utf-8', errors='replace')
+
+            if password != token:
+                client.send(b'\x01\xFF')   # auth fallita
+                client.close(); return
+            client.send(b'\x01\x00')       # auth OK
+
+            # ── Richiesta CONNECT ─────────────────────────────────────────────
             req = client.recv(4)
-            if not req or req[1] != 1:  # only CONNECT
-                client.send(b'\x05\x07\x00\x01' + b'\x00'*6); client.close(); return
+            if not req or req[1] != 1:     # solo CONNECT supportato
+                client.send(b'\x05\x07\x00\x01' + b'\x00' * 6)
+                client.close(); return
 
             atype = req[3]
             if atype == 1:    # IPv4
                 addr = socket.inet_ntoa(client.recv(4))
-            elif atype == 3:  # domain
-                ln = client.recv(1)[0]
+            elif atype == 3:  # dominio
+                ln   = client.recv(1)[0]
                 addr = client.recv(ln).decode()
             else:
                 client.close(); return
             port = int.from_bytes(client.recv(2), 'big')
 
+            # Blocca destinazioni riservate / link-local / loopback (SSRF prevention)
+            if not _socks5_addr_allowed(addr):
+                client.send(b'\x05\x02\x00\x01' + b'\x00' * 6)  # connection not allowed
+                client.close(); return
+
             remote = socket.create_connection((addr, port), timeout=10)
-            client.send(b'\x05\x00\x00\x01' + socket.inet_aton('0.0.0.0') + (0).to_bytes(2,'big'))
+            client.send(
+                b'\x05\x00\x00\x01' + socket.inet_aton('0.0.0.0') + (0).to_bytes(2, 'big')
+            )
             self._bridge(client, addr, port, remote)
         except Exception:
             try: client.close()

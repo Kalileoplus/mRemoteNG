@@ -123,7 +123,7 @@ class HomePanel(QWidget):
         title_row = QHBoxLayout()
         title_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        title_lbl = QLabel("PyMRemoteNG")
+        title_lbl = QLabel("Nexus")
         title_lbl.setFont(QFont("Segoe UI", 32, QFont.Weight.Bold))
         title_lbl.setStyleSheet(f"color: {TEXT_COLOR}; background: transparent;")
         title_row.addWidget(title_lbl)

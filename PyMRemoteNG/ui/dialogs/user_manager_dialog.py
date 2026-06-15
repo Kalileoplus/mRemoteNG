@@ -137,6 +137,14 @@ class UserEditDialog(QDialog):
 class UserManagerDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
+        # VULN-10: verifica permessi prima di costruire la UI
+        current = UserManager.get_instance().current_user()
+        if not current or not current.can("manage_users"):
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, self.reject)
+            self._unauthorized = True
+            return
+        self._unauthorized = False
         self.setWindowTitle("Gestione Utenti")
         self.setMinimumSize(700, 480)
         self._mgr = UserManager.get_instance()

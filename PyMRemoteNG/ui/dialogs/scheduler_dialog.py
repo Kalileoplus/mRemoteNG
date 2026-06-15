@@ -162,6 +162,14 @@ class SchedulerDialog(QDialog):
         self.setMinimumSize(780, 520)
         self._sched = TaskScheduler.get_instance()
         self._available_hosts = available_hosts or []
+
+        from core.user_manager import UserManager
+        from PyQt6.QtCore import QTimer
+        user = UserManager.get_instance().current_user()
+        if not user or not user.can("manage_scheduler"):
+            QTimer.singleShot(0, self.reject)
+            return
+
         self._setup_ui()
         self._apply_style()
         self._refresh()

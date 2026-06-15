@@ -17,12 +17,19 @@ Attach/Detach interattivo:
   - Bottone "Aggancia": riaggancio manuale
 """
 from __future__ import annotations
+import atexit
 import ctypes
+import ctypes.wintypes as _wt
 import os
+import re as _re
 import subprocess
 import tempfile
 import time
 from typing import TYPE_CHECKING, Optional
+
+# Caratteri consentiti nei valori stringa del file .rdp
+# (newline o CR romperebbero il formato key:type:value)
+_RDP_VALUE_RE = _re.compile(r'[\r\n\x00]')
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -201,7 +208,9 @@ class _RDPThread(QThread):
     def run(self):
         try:
             self._proc = subprocess.Popen(
-                ["mstsc", self._rdp_file], creationflags=_NO_WIN
+                ["mstsc", self._rdp_file],
+                creationflags=_NO_WIN,
+                close_fds=True,
             )
         except Exception as e:
             self.failed.emit(f"mstsc.exe non trovato: {e}")
@@ -300,18 +309,56 @@ def _suppress_rdp_security_warning(hostname: str, username: str = "",
 
 
 def _store_credentials(host: str, user: str, password: str):
-    if not user or not password:
+    """Salva le credenziali in Windows Credential Manager senza esporre
+    la password nella riga di comando (evita VULN-07).
+    Registra anche un atexit per pulizia garantita su crash."""
+    if not user or not password or os.name != 'nt':
         return
+    atexit.register(_delete_credentials, host)
     try:
-        subprocess.run(
-            ["cmdkey", f"/generic:TERMSRV/{host}",
-             f"/user:{user}", f"/pass:{password}"],
-            shell=False,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            creationflags=_NO_WIN, timeout=5,
-        )
-    except Exception:
-        pass
+        class _FILETIME(ctypes.Structure):
+            _fields_ = [('dwLow', _wt.DWORD), ('dwHigh', _wt.DWORD)]
+
+        class _CREDENTIAL(ctypes.Structure):
+            _fields_ = [
+                ('Flags',              _wt.DWORD),
+                ('Type',               _wt.DWORD),
+                ('TargetName',         _wt.LPWSTR),
+                ('Comment',            _wt.LPWSTR),
+                ('LastWritten',        _FILETIME),
+                ('CredentialBlobSize', _wt.DWORD),
+                ('CredentialBlob',     ctypes.POINTER(ctypes.c_ubyte)),
+                ('Persist',            _wt.DWORD),
+                ('AttributeCount',     _wt.DWORD),
+                ('Attributes',         ctypes.c_void_p),
+                ('TargetAlias',        _wt.LPWSTR),
+                ('UserName',           _wt.LPWSTR),
+            ]
+
+        pw_bytes = password.encode('utf-16-le')
+        blob     = (ctypes.c_ubyte * len(pw_bytes))(*pw_bytes)
+        cred     = _CREDENTIAL()
+        cred.Flags              = 0
+        cred.Type               = 1            # CRED_TYPE_GENERIC
+        cred.TargetName         = f"TERMSRV/{host}"
+        cred.Comment            = None
+        cred.CredentialBlobSize = len(pw_bytes)
+        cred.CredentialBlob     = blob
+        cred.Persist            = 2            # CRED_PERSIST_LOCAL_MACHINE
+        cred.AttributeCount     = 0
+        cred.Attributes         = None
+        cred.TargetAlias        = None
+        cred.UserName           = user
+        result = ctypes.windll.advapi32.CredWriteW(ctypes.byref(cred), 0)
+        if not result:
+            import logging
+            logging.getLogger(__name__).warning(
+                "CredWriteW fallito per host '%s' — le credenziali RDP non saranno pre-salvate.",
+                host
+            )
+    except Exception as _e:
+        import logging
+        logging.getLogger(__name__).warning("Errore Credential Manager: %s", _e)
 
 
 def _safe_remove(path: str):
@@ -323,12 +370,11 @@ def _safe_remove(path: str):
 
 
 def _delete_credentials(host: str):
+    """Rimuove le credenziali dal Windows Credential Manager."""
+    if os.name != 'nt':
+        return
     try:
-        subprocess.run(
-            ["cmdkey", f"/delete:TERMSRV/{host}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            creationflags=_NO_WIN, timeout=5,
-        )
+        ctypes.windll.advapi32.CredDeleteW(f"TERMSRV/{host}", 1, 0)
     except Exception:
         pass
 
@@ -767,8 +813,9 @@ class RDPProtocol(ProtocolBase):
         mic_mode        = "1" if (opts and opts.redirect_microphone) else "0"
         color_depth     = str(opts.color_depth) if opts else "32"
 
+        hostname_safe = _RDP_VALUE_RE.sub('', info.hostname or "")
         lines = [
-            f"full address:s:{info.hostname}",
+            f"full address:s:{hostname_safe}",
             f"server port:i:{info.port or 3389}",
             f"screen mode id:i:{screen_mode}",
             f"desktopwidth:i:{w}",
@@ -801,12 +848,28 @@ class RDPProtocol(ProtocolBase):
             "disable cursor setting:i:0",
         ]
         if user_str.strip():
-            lines.append(f"username:s:{user_str}")
+            lines.append(f"username:s:{_RDP_VALUE_RE.sub('', user_str)}")
+
+        # Programma di avvio (se impostato) — sanitizzato per evitare injection nel file .rdp
+        start_prog = _RDP_VALUE_RE.sub('', info.rdp_start_program or "")
+        start_dir  = _RDP_VALUE_RE.sub('', info.rdp_start_program_workdir or "")
+        if start_prog:
+            lines.append(f"alternate shell:s:{start_prog}")
+            lines.append(f"working dir:s:{start_dir}")
 
         try:
-            fd, path = tempfile.mkstemp(suffix=".rdp", prefix="pymremote_")
+            # umask 0o077 garantisce permessi owner-only già al momento della creazione
+            _old_mask = os.umask(0o077)
+            try:
+                fd, path = tempfile.mkstemp(suffix=".rdp", prefix="pymremote_")
+            finally:
+                os.umask(_old_mask)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines) + "\n")
+            if os.name == 'nt':
+                from core.crypto import _restrict_file_permissions
+                _restrict_file_permissions(path)
+            atexit.register(_safe_remove, path)
             return path
         except Exception:
             return ""

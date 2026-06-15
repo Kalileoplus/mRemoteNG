@@ -4,6 +4,7 @@ Finestra principale - layout identico a MobaXterm (dark theme).
 from __future__ import annotations
 import math
 import os
+import re
 import sys
 from typing import Dict, Optional
 
@@ -35,7 +36,7 @@ _SHARED_XML = os.path.normpath(_SHARED_XML)
 DEFAULT_CONNS_PATH = (
     _SHARED_XML if os.path.isdir(os.path.dirname(_SHARED_XML))
     else os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
-                      "PyMRemoteNG", "confCons.xml")
+                      "Nexus", "confCons.xml")
 )
 
 # ─────────────────────────────────────────────────────────────
@@ -66,74 +67,121 @@ class ConnectionTab(QWidget):
 # ─────────────────────────────────────────────────────────────
 # Pannello tab laterale verticale (stile MobaXterm)
 # ─────────────────────────────────────────────────────────────
+class _TabButton(QWidget):
+    """Singolo bottone della sidebar: icona grande + etichetta proporzionata."""
+    clicked = pyqtSignal()
+
+    def __init__(self, icon: str, name: str, color: str, tip: str,
+                 checked: bool = False):
+        super().__init__()
+        self._color  = color
+        self._checked = False
+        self.setObjectName("tabBtn")
+        self.setFixedSize(80, 82)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(f"<b>{name}</b><br>{tip}")
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 14, 0, 10)
+        lay.setSpacing(7)
+
+        self._icon_lbl = QLabel(icon)
+        self._icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._icon_lbl)
+
+        self._name_lbl = QLabel(name)
+        self._name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._name_lbl)
+
+        self._apply_state(checked)
+
+    def _apply_state(self, checked: bool):
+        self._checked = checked
+        if checked:
+            self.setStyleSheet(
+                f"QWidget#tabBtn {{ background:#0D1A0D;"
+                f" border-left:3px solid {self._color}; }}"
+            )
+            self._icon_lbl.setStyleSheet(
+                f"font-size:24px; color:{self._color}; background:transparent;"
+            )
+            self._name_lbl.setStyleSheet(
+                f"font-size:11px; font-weight:bold; color:{self._color};"
+                " background:transparent;"
+            )
+        else:
+            self.setStyleSheet(
+                "QWidget#tabBtn { background:transparent;"
+                " border-left:3px solid transparent; }"
+            )
+            self._icon_lbl.setStyleSheet(
+                "font-size:24px; color:#4A4A4A; background:transparent;"
+            )
+            self._name_lbl.setStyleSheet(
+                "font-size:11px; color:#4A4A4A; background:transparent;"
+            )
+
+    def setChecked(self, v: bool):
+        self._apply_state(v)
+
+    def isChecked(self) -> bool:
+        return self._checked
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(e)
+
+    def enterEvent(self, e):
+        if not self._checked:
+            self.setStyleSheet(
+                "QWidget#tabBtn { background:#1A1A1A;"
+                " border-left:3px solid #2A2A2A; }"
+            )
+            self._icon_lbl.setStyleSheet(
+                "font-size:24px; color:#888888; background:transparent;"
+            )
+            self._name_lbl.setStyleSheet(
+                "font-size:11px; color:#888888; background:transparent;"
+            )
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        if not self._checked:
+            self._apply_state(False)
+        super().leaveEvent(e)
+
+
 class VerticalTabBar(QWidget):
-    """
-    Barra tab verticale stile MobaXterm.
-    QButtonGroup exclusive: il tab attivo non può essere de-selezionato.
-    """
+    """Barra tab verticale stile MobaXterm."""
     tab_changed = pyqtSignal(int)
 
     TABS = [
-        ("Sessions",  "🖥",
-         "#4EC94E",
+        ("Sessions",  "🖥",  "#4EC94E",
          "Gestione connessioni salvate (SSH, RDP, VNC…)"),
-        ("Bookmarks", "★",
-         "#FFC107",
+        ("Bookmarks", "🔖",  "#FFC107",
          "Segnalibri: connessioni preferite ad accesso rapido"),
-        ("Tools",     "🔧",
-         "#5BA8E5",
+        ("Tools",     "🔧",  "#5BA8E5",
          "Port Scanner, Ping Monitor, Network Discovery"),
-        ("Macros",    "⚡",
-         "#F5A623",
+        ("Macros",    "⚡",  "#F5A623",
          "Macro: comandi automatici da inviare alle sessioni"),
     ]
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(64)
+        self.setFixedWidth(80)
         self.setStyleSheet("background:#111111; border-right:1px solid #1A1A1A;")
         self._current = 0
-        self._btns: list[QPushButton] = []
-
-        from PyQt6.QtWidgets import QButtonGroup
-        self._group = QButtonGroup(self)
-        self._group.setExclusive(True)   # impedisce de-selezione del tab attivo
+        self._btns: list[_TabButton] = []
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 4, 0, 4)
-        layout.setSpacing(1)
+        layout.setContentsMargins(0, 6, 0, 6)
+        layout.setSpacing(2)
 
-        for i, (name, icon, color, _tip) in enumerate(self.TABS):
-            btn = QPushButton(f"{icon}\n{name}")
-            btn.setFixedSize(64, 60)
-            btn.setCheckable(True)
-            btn.setChecked(i == 0)
-            btn.setToolTip(f"<b>{name}</b><br>{_tip}")
-            self._group.addButton(btn, i)
+        for i, (name, icon, color, tip) in enumerate(self.TABS):
+            btn = _TabButton(icon, name, color, tip, checked=(i == 0))
             idx = i
-            btn.clicked.connect(lambda _checked, x=idx: self._on_click(x))
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent;
-                    color: {SUB_COLOR};
-                    border: none;
-                    border-left: 3px solid transparent;
-                    font-size: 9px;
-                    padding: 4px 2px;
-                    text-align: center;
-                }}
-                QPushButton:hover:!checked {{
-                    background: #1A1A1A;
-                    color: {TEXT_COLOR};
-                    border-left: 3px solid #2A2A2A;
-                }}
-                QPushButton:checked {{
-                    background: #0D1A0D;
-                    color: {color};
-                    border-left: 3px solid {color};
-                    font-weight: bold;
-                }}
-            """)
+            btn.clicked.connect(lambda x=idx: self._on_click(x))
             layout.addWidget(btn)
             self._btns.append(btn)
 
@@ -167,10 +215,10 @@ class _CloseTabBar(QTabBar):
                 color: {SUB_COLOR};
                 border: none;
                 border-right: 1px solid #222;
-                padding: 0 32px 0 12px;
+                padding: 0 34px 0 14px;
                 min-height: 40px;
-                min-width: 120px;
-                max-width: 220px;
+                min-width: 160px;
+                max-width: 300px;
                 font-size: 12px;
             }}
             QTabBar::tab:selected {{
@@ -194,7 +242,7 @@ class _CloseTabBar(QTabBar):
 
     def tabSizeHint(self, index: int) -> QSize:
         s = super().tabSizeHint(index)
-        return QSize(max(s.width(), 130), 40)
+        return QSize(max(s.width(), 165), 40)
 
     def _setup_close_buttons(self):
         """Sostituisce i close button con widget QPushButton rossi."""
@@ -281,7 +329,7 @@ class _ActiveSessionsBar(QWidget):
             self.setFixedHeight(0)
             return
 
-        self.setFixedHeight(34)
+        self.setFixedHeight(40)
         for conn_id, tab in open_tabs.items():
             conn  = tab.conn
             proto = conn.protocol.value if hasattr(conn.protocol, "value") else str(conn.protocol)
@@ -292,31 +340,38 @@ class _ActiveSessionsBar(QWidget):
 
     def _make_chip(self, name: str, proto: str, color: str, conn_id: str) -> QWidget:
         chip = QWidget()
-        chip.setFixedHeight(24)
+        chip.setFixedHeight(26)
         chip.setStyleSheet(
-            f"QWidget {{ background:#141414; border:1px solid {color}44;"
-            f" border-radius:12px; }}"
+            f"QWidget {{ background:#141414; border:1px solid {color}55;"
+            f" border-radius:13px; }}"
         )
         lay = QHBoxLayout(chip)
-        lay.setContentsMargins(7, 0, 4, 0)
-        lay.setSpacing(4)
+        lay.setContentsMargins(9, 0, 6, 0)
+        lay.setSpacing(5)
 
         dot = QLabel("●")
         dot.setStyleSheet(f"color:{color}; font-size:8px; background:transparent; border:none;")
+        dot.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         lay.addWidget(dot)
 
-        name_lbl = QLabel(
-            f'<span style="color:{color}; font-size:9px">{proto}</span>'
-            f' <span style="font-size:11px">{name[:20]}{"…" if len(name)>20 else ""}</span>'
+        proto_lbl = QLabel(proto)
+        proto_lbl.setStyleSheet(
+            f"color:{color}; font-size:9px; font-weight:bold; background:transparent; border:none;"
         )
-        name_lbl.setStyleSheet("background:transparent; border:none;")
+        proto_lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        lay.addWidget(proto_lbl)
+
+        name_short = name[:18] + "…" if len(name) > 18 else name
+        name_lbl = QLabel(name_short)
+        name_lbl.setStyleSheet("color:#CCCCCC; font-size:11px; background:transparent; border:none;")
+        name_lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         lay.addWidget(name_lbl)
 
         btn = QPushButton("✕")
         btn.setFixedSize(16, 16)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(
-            "QPushButton { background:transparent; color:#444; border:none;"
+            "QPushButton { background:transparent; color:#555; border:none;"
             " border-radius:8px; font-size:9px; font-weight:bold; }"
             "QPushButton:hover { background:#EF5350; color:white; }"
         )
@@ -324,7 +379,7 @@ class _ActiveSessionsBar(QWidget):
         btn.clicked.connect(lambda: self.close_requested.emit(cid))
         lay.addWidget(btn)
 
-        chip.setFixedWidth(56 + min(len(name), 20) * 7)
+        # Width determined naturally by content — no setFixedWidth
         return chip
 
 
@@ -339,7 +394,7 @@ class MainWindow(QMainWindow):
         self._open_tabs: Dict[str, ConnectionTab] = {}
         self._conns_path = DEFAULT_CONNS_PATH
 
-        self.setWindowTitle("PyMRemoteNG")
+        self.setWindowTitle("Nexus")
         self.setMinimumSize(1100, 680)
         self.resize(1420, 860)
         self.setStyleSheet(DARK_QSS)
@@ -944,7 +999,7 @@ class MainWindow(QMainWindow):
             QStatusBar::item {{ border: none; }}
         """)
         self.setStatusBar(sb)
-        self._status_lbl = QLabel("Pronto — PyMRemoteNG")
+        self._status_lbl = QLabel("Pronto — Nexus")
         sb.addWidget(self._status_lbl)
         self._conn_lbl = QLabel("Sessioni aperte: 0")
         sb.addPermanentWidget(self._conn_lbl)
@@ -966,7 +1021,7 @@ class MainWindow(QMainWindow):
         # Aggiorna header contestuale
         _info = [
             ("🖥",  "Sessions",  "Gestione connessioni SSH · RDP · VNC · Telnet",  "#4EC94E"),
-            ("★",   "Bookmarks", "Connessioni preferite ad accesso rapido",         "#FFC107"),
+            ("🔖",  "Bookmarks", "Connessioni preferite ad accesso rapido",         "#FFC107"),
             ("🔧",  "Tools",     "Port Scanner · Ping Monitor · Network Discovery", "#5BA8E5"),
             ("⚡",  "Macros",    "Comandi automatici da inviare alle sessioni",      "#F5A623"),
         ]
@@ -1051,7 +1106,8 @@ class MainWindow(QMainWindow):
         icon_map = {"SSH2":"🟢","RDP":"🔵","VNC":"🟠",
                     "HTTP":"🟣","HTTPS":"🟣","Telnet":"🟡"}
         icon = icon_map.get(proto, "⚪")
-        title = f"{icon} {conn.name}"
+        name_short = conn.name[:26] + "…" if len(conn.name) > 26 else conn.name
+        title = f"{icon} {name_short}"
         idx = self.tab_widget.addTab(tab, title)
         self.tab_widget.setCurrentIndex(idx)
         self._open_tabs[conn.id] = tab
@@ -1160,7 +1216,7 @@ class MainWindow(QMainWindow):
         if self._dashboard_window is None:
             # Crea la finestra una sola volta
             self._dashboard_window = QWidget(self)
-            self._dashboard_window.setWindowTitle("PyMRemoteNG — Dashboard Live")
+            self._dashboard_window.setWindowTitle("Nexus — Dashboard Live")
             self._dashboard_window.setWindowFlags(Qt.WindowType.Window)
             self._dashboard_window.resize(1060, 700)
             self._dashboard_window.setStyleSheet(f"background:{BG_COLOR};")
@@ -1355,36 +1411,83 @@ class MainWindow(QMainWindow):
         sched.set_execute_callback(self._on_scheduler_task_due)
         sched.start()
 
+    # Pattern comandi pericolosi bloccati dallo scheduler
+    _DANGEROUS_CMD = re.compile(
+        r'rm\s+(-\w*f\w*\s+/|--no-preserve-root)'    # rm -rf /
+        r'|mkfs\b'                                     # formattazione disco
+        r'|dd\s+\S*if='                                # dd su device
+        r'|>\s*/dev/[sh]d'                             # sovrascrittura device
+        r'|curl\s+[^\n]*\|\s*(ba?sh|sh\b)'            # curl | bash
+        r'|wget\s+[^\n]*\|\s*(ba?sh|sh\b)'            # wget | sh
+        r'|:\(\)\{.*\}.*:',                            # fork bomb
+        re.IGNORECASE | re.DOTALL
+    )
+
     def _on_scheduler_task_due(self, task):
+        import re as _re
+        import socket
+        import paramiko
         from core.session_logger import SessionLogger
-        hosts   = task.target_hosts
-        cmd     = task.command
+        from protocols.ssh_protocol import _KNOWN_HOSTS_PATH
+
+        hosts = task.target_hosts
+        cmd   = task.command
+
+        # Blocca comandi con pattern pericolosi
+        if self._DANGEROUS_CMD.search(cmd):
+            SessionLogger.get_instance().log(
+                "ERROR", f"scheduler/{task.name}", task.protocol,
+                f"[BLOCCATO] pattern pericoloso: {cmd[:120]}"
+            )
+            from core.scheduler import TaskScheduler
+            TaskScheduler.get_instance().mark_ran(
+                task.id, "BLOCCATO: pattern pericoloso rilevato"
+            )
+            ToastManager.get_instance().show(
+                "warning", f"Scheduler: {task.name}",
+                "Comando bloccato: pattern pericoloso"
+            )
+            return
+
+        # Log prima dell'esecuzione (audit trail)
+        host_list = ", ".join(hosts[:5]) + ("…" if len(hosts) > 5 else "")
+        SessionLogger.get_instance().log(
+            "COMMAND", f"scheduler/{task.name}", task.protocol,
+            f"[AVVIO] cmd={cmd[:80]} hosts=[{host_list}]"
+        )
+
         results = []
         for host in hosts:
             try:
-                import socket
-                try:
-                    import paramiko
-                except ImportError:
-                    results.append(f"{host}: ERRORE - paramiko non installato")
-                    continue
                 sock = socket.create_connection((host, 22), timeout=8)
-                cli = paramiko.SSHClient()
-                cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                cli  = paramiko.SSHClient()
+                # Usa RejectPolicy: lo scheduler accetta solo host già verificati
+                cli.set_missing_host_key_policy(paramiko.RejectPolicy())
+                if os.path.exists(_KNOWN_HOSTS_PATH):
+                    cli.load_host_keys(_KNOWN_HOSTS_PATH)
                 cli.connect(hostname=host, sock=sock, timeout=8,
                             look_for_keys=True, allow_agent=True)
                 _, stdout, stderr = cli.exec_command(cmd, timeout=30)
                 out = stdout.read().decode(errors="replace").strip()
                 err = stderr.read().decode(errors="replace").strip()
                 cli.close()
-                result = out or err or "OK"
-                results.append(f"{host}: {result[:120]}")
+                # Log solo esito (non output — potrebbe contenere segreti)
+                esito = "OK" if not err else f"WARN:{err[:40]}"
+                results.append(f"{host}: {esito}")
                 SessionLogger.get_instance().log(
                     "COMMAND", host, task.protocol,
-                    f"[scheduler] {cmd[:80]} → {result[:80]}"
+                    f"[scheduler/{task.name}] esito={esito}"
                 )
+            except paramiko.SSHException as e:
+                msg = str(e)
+                if "not found in known_hosts" in msg or "Server" in msg:
+                    results.append(
+                        f"{host}: BLOCCATO - host non presente in known_hosts"
+                    )
+                else:
+                    results.append(f"{host}: ERRORE SSH - {msg[:60]}")
             except Exception as e:
-                results.append(f"{host}: ERRORE - {e}")
+                results.append(f"{host}: ERRORE - {type(e).__name__}")
         from core.scheduler import TaskScheduler
         summary = "; ".join(results)
         TaskScheduler.get_instance().mark_ran(task.id, summary)
@@ -1401,8 +1504,8 @@ class MainWindow(QMainWindow):
             )
 
     def _show_about(self):
-        QMessageBox.about(self, "PyMRemoteNG",
-            "<b>PyMRemoteNG</b><br>Multi-protocol remote connection manager<br>"
+        QMessageBox.about(self, "Nexus",
+            "<b>Nexus</b><br>Multi-protocol remote connection manager<br>"
             "Ispirato a MobaXterm<br><br>"
             "<b>Protocolli:</b> SSH, RDP, VNC, Telnet, HTTP/HTTPS<br>"
             "<b>UI:</b> PyQt6  |  <b>SSH:</b> paramiko")

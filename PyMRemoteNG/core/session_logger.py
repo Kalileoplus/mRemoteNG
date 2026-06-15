@@ -13,8 +13,9 @@ import time
 from datetime import datetime, timedelta
 from typing import List, Optional
 
-MAX_LOG_DAYS = 90    # file più vecchi vengono eliminati automaticamente
-CACHE_TTL    = 30    # secondi prima di rileggere dal disco
+MAX_LOG_DAYS    = 90    # file più vecchi vengono eliminati automaticamente
+CACHE_TTL       = 30    # secondi prima di rileggere dal disco
+MAX_CACHE_SIZE  = 10_000  # eventi massimi tenuti in memoria
 
 _SHARED_LOG_DIR = os.path.normpath(os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -29,7 +30,7 @@ def _get_log_dir() -> str:
     else:
         d = os.path.join(
             os.environ.get("APPDATA", os.path.expanduser("~")),
-            "PyMRemoteNG", "logs"
+            "Nexus", "logs"
         )
     os.makedirs(d, exist_ok=True)
     return d
@@ -133,6 +134,12 @@ class SessionLogger:
                 user = u.username if u else "system"
             except Exception:
                 user = "system"
+        # Sanitizza: rimuove TUTTI i caratteri di controllo (incluso ESC per ANSI injection)
+        import re as _re
+        _ctrl = _re.compile(r'[\x00-\x1f\x7f]')
+        detail = _ctrl.sub(' ', detail).strip()
+        user   = _ctrl.sub('', user).strip()
+        host   = _ctrl.sub('', host).strip()
         ev = SessionEvent(event_type, user, host, protocol, detail)
         with self._lock:
             self._today_events.append(ev)
@@ -176,7 +183,7 @@ class SessionLogger:
         except Exception:
             pass
 
-        result = sorted(all_events, key=lambda e: e.ts, reverse=True)
+        result = sorted(all_events, key=lambda e: e.ts, reverse=True)[:MAX_CACHE_SIZE]
         with self._lock:
             self._cache      = result
             self._cache_ts   = time.monotonic()
@@ -191,24 +198,31 @@ class SessionLogger:
     def purge_before(self, days_to_keep: int = 30) -> int:
         """
         Elimina i file di log più vecchi di `days_to_keep` giorni.
+        Se days_to_keep == 0, elimina TUTTI i file di log.
         Ritorna il numero di file eliminati.
-        Usato dal log viewer per il pulsante 'Svuota log vecchi'.
         """
         log_dir = _get_log_dir()
-        cutoff  = datetime.now() - timedelta(days=days_to_keep)
+        delete_all = (days_to_keep == 0)
+        cutoff = datetime.now() - timedelta(days=days_to_keep) if not delete_all else None
         removed = 0
         try:
             for fname in os.listdir(log_dir):
                 if not (fname.startswith("session_") and fname.endswith(".json")):
                     continue
                 try:
-                    file_date = datetime.strptime(fname[8:18], "%Y-%m-%d")
-                    if file_date < cutoff:
+                    if delete_all:
                         os.remove(os.path.join(log_dir, fname))
                         removed += 1
+                    else:
+                        file_date = datetime.strptime(fname[8:18], "%Y-%m-%d")
+                        if file_date < cutoff:
+                            os.remove(os.path.join(log_dir, fname))
+                            removed += 1
                 except Exception:
                     pass
         except Exception:
             pass
+        if delete_all:
+            self._today_events.clear()
         self.invalidate_cache()
         return removed

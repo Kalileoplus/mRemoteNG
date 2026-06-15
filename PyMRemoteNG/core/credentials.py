@@ -11,7 +11,7 @@ from typing import List, Optional
 
 CREDS_PATH = os.path.join(
     os.environ.get("APPDATA", os.path.expanduser("~")),
-    "PyMRemoteNG", "credentials.json"
+    "Nexus", "credentials.json"
 )
 
 
@@ -41,12 +41,14 @@ class SavedCredential:
 
     @staticmethod
     def from_dict(d: dict) -> "SavedCredential":
+        if not isinstance(d, dict):
+            raise ValueError("Formato credenziale non valido.")
         return SavedCredential(
-            id=d.get("id", str(uuid.uuid4())),
-            name=d.get("name", ""),
-            username=d.get("username", ""),
-            password_enc=d.get("password_enc", ""),
-            domain=d.get("domain", ""),
+            id=str(d.get("id", uuid.uuid4()))[:64],
+            name=str(d.get("name", ""))[:256],
+            username=str(d.get("username", ""))[:256],
+            password_enc=str(d.get("password_enc", ""))[:8192],
+            domain=str(d.get("domain", ""))[:256],
         )
 
 

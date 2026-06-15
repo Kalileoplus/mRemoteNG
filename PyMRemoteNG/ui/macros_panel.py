@@ -13,7 +13,7 @@ from themes.dark_theme import ACCENT_COLOR, CARD_COLOR, TEXT_COLOR, SUB_COLOR
 
 MACROS_PATH = os.path.join(
     os.environ.get("APPDATA", os.path.expanduser("~")),
-    "PyMRemoteNG", "macros.json"
+    "Nexus", "macros.json"
 )
 
 

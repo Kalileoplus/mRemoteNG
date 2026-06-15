@@ -251,6 +251,11 @@ class ConnectionInfo:
         }
         return defaults.get(self.protocol, 0)
 
+    def __repr__(self) -> str:
+        return (f"ConnectionInfo(id={self.id!r}, name={self.name!r}, "
+                f"hostname={self.hostname!r}, protocol={self.protocol!r}, "
+                f"password='***', rdg_password='***')")
+
     def clone(self) -> 'ConnectionInfo':
         import copy
         cloned = copy.deepcopy(self)

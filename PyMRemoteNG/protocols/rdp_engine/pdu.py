@@ -69,7 +69,7 @@ def x224_cc_parse(data: bytes) -> int:
 # ── MCS GCC blobs (template basato su connessione standard) ─────────────────
 
 # CS_CORE: Client Core Data (MS-RDPBCGR 2.2.1.3.2)
-def gcc_cs_core(width: int, height: int, client_name: str = "PyMRemoteNG") -> bytes:
+def gcc_cs_core(width: int, height: int, client_name: str = "Nexus") -> bytes:
     name_encoded = client_name.encode("utf-16-le")[:32]
     name_padded  = name_encoded.ljust(32, b"\x00")
     return struct.pack("<HHIHHHHHHHHHHH",

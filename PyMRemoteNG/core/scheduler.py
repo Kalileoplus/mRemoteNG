@@ -3,16 +3,20 @@ Scheduler: esegue script/comandi su connessioni in orari programmati.
 """
 from __future__ import annotations
 import json
+import logging
 import os
+import re as _re
 import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, List, Optional
 
+_HOST_RE = _re.compile(r'^[a-zA-Z0-9.\-_\[\]:]+$')
+
 SCHEDULER_PATH = os.path.join(
     os.environ.get("APPDATA", os.path.expanduser("~")),
-    "PyMRemoteNG", "scheduler.json"
+    "Nexus", "scheduler.json"
 )
 
 
@@ -86,6 +90,7 @@ class TaskScheduler:
         self._tasks: List[ScheduledTask] = []
         self._timer: Optional[threading.Timer] = None
         self._execute_cb: Optional[Callable[["ScheduledTask"], None]] = None
+        self._lock = threading.Lock()
         self.load()
 
     @classmethod
@@ -101,22 +106,64 @@ class TaskScheduler:
         if not os.path.exists(SCHEDULER_PATH):
             return
         try:
-            with open(SCHEDULER_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            self._tasks = [ScheduledTask.from_dict(d) for d in data.get("tasks", [])]
+            with self._lock:
+                with open(SCHEDULER_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                tasks = []
+                for d in data.get("tasks", []):
+                    if not isinstance(d, dict):
+                        continue
+                    try:
+                        t = ScheduledTask.from_dict(d)
+                        # Valida che i campi critici abbiano lunghezza accettabile
+                        if len(t.command) > 4096 or len(t.name) > 128:
+                            logging.warning("Task ignorato: campi troppo lunghi.")
+                            continue
+                        tasks.append(t)
+                    except Exception:
+                        logging.warning("Task ignorato: formato non valido.")
+                self._tasks = tasks
         except Exception:
             pass
 
     def save(self):
         os.makedirs(os.path.dirname(SCHEDULER_PATH), exist_ok=True)
-        with open(SCHEDULER_PATH, "w", encoding="utf-8") as f:
-            json.dump({"tasks": [t.to_dict() for t in self._tasks]}, f, indent=2)
+        with self._lock:
+            tmp = SCHEDULER_PATH + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"tasks": [t.to_dict() for t in self._tasks]}, f, indent=2)
+            os.replace(tmp, SCHEDULER_PATH)  # scrittura atomica
 
     def all(self) -> List[ScheduledTask]:
         return list(self._tasks)
 
+    @staticmethod
+    def _validate_task_fields(name: str, command: str,
+                              target_hosts: List[str],
+                              protocol: str, schedule_type: str,
+                              run_at: str) -> None:
+        if not name or len(name) > 128:
+            raise ValueError("Nome task non valido (max 128 caratteri).")
+        if not command or len(command) > 4096:
+            raise ValueError("Comando non valido (max 4096 caratteri).")
+        if not target_hosts:
+            raise ValueError("Almeno un host è obbligatorio.")
+        for h in target_hosts:
+            if not _HOST_RE.match(h) or len(h) > 255:
+                raise ValueError(f"Host non valido: {h!r}")
+        if protocol not in ("SSH2", "Telnet"):
+            raise ValueError(f"Protocollo non supportato: {protocol!r}")
+        if schedule_type not in ("once", "daily", "weekly"):
+            raise ValueError(f"Frequenza non valida: {schedule_type!r}")
+        try:
+            datetime.fromisoformat(run_at)
+        except (ValueError, TypeError):
+            raise ValueError(f"Data/ora non valida: {run_at!r}")
+
     def add(self, name: str, command: str, target_hosts: List[str],
             protocol: str, schedule_type: str, run_at: str) -> ScheduledTask:
+        self._validate_task_fields(name, command, target_hosts,
+                                   protocol, schedule_type, run_at)
         t = ScheduledTask(
             id=str(uuid.uuid4()), name=name, command=command,
             target_hosts=target_hosts, protocol=protocol,

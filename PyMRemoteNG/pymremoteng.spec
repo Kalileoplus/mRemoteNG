@@ -46,7 +46,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='PyMRemoteNG',
+    name='Nexus',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -67,5 +67,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='PyMRemoteNG',
+    name='Nexus',
 )

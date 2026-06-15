@@ -2,6 +2,7 @@
 Session Log Viewer: visualizza, filtra, esporta e svuota i log di sessione.
 """
 from __future__ import annotations
+import os
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
@@ -78,6 +79,7 @@ class SessionLogViewer(QDialog):
         self._days_spin.setRange(1, 365)
         self._days_spin.setValue(30)
         self._days_spin.setFixedWidth(60)
+        self._days_spin.setToolTip("Quanti giorni di log visualizzare")
         filter_row.addWidget(days_lbl)
         filter_row.addWidget(self._days_spin)
 
@@ -164,6 +166,14 @@ class SessionLogViewer(QDialog):
         purge_btn.clicked.connect(self._purge_logs)
         footer.addWidget(purge_btn)
 
+        purge_all_btn = QPushButton("💥  Elimina tutti i log")
+        purge_all_btn.setToolTip("Elimina TUTTI i file di log senza eccezioni.")
+        purge_all_btn.setStyleSheet(_btn_style.format(
+            bg="#3A0A0A", fg="#FF5252", bd="#6A1A1A", hv="#4A1010"
+        ))
+        purge_all_btn.clicked.connect(self._purge_all_logs)
+        footer.addWidget(purge_all_btn)
+
         footer.addStretch()
 
         close_btn = QPushButton("Chiudi")
@@ -211,6 +221,14 @@ class SessionLogViewer(QDialog):
         )
         if not path:
             return
+        # Verifica che il path sia dentro la home utente (prevenzione path traversal)
+        home = os.path.expanduser("~")
+        if not os.path.abspath(path).startswith(os.path.abspath(home)):
+            QMessageBox.warning(
+                self, "Path non consentito",
+                "Il file deve essere salvato nella cartella utente."
+            )
+            return
         try:
             from core.reporter import sessions_to_csv, save_file
             # Usa gli eventi filtrati (quelli in tabella), non tutti
@@ -252,10 +270,39 @@ class SessionLogViewer(QDialog):
         try:
             from core.session_logger import SessionLogger
             removed = SessionLogger.get_instance().purge_before(days_to_keep=days)
+            if removed == 0:
+                QMessageBox.information(
+                    self, "Svuota log",
+                    f"Nessun file eliminato.\n\n"
+                    f"Tutti i log esistenti sono all'interno degli ultimi {days} giorni.\n"
+                    f"Per eliminare tutti i log usa il pulsante 'Elimina tutti i log'."
+                )
+            else:
+                QMessageBox.information(
+                    self, "Svuota log", f"Eliminati {removed} file di log.")
+            self._load()
+        except Exception as e:
+            QMessageBox.critical(self, "Errore", f"Pulizia fallita:\n{e}")
+
+    def _purge_all_logs(self):
+        """Elimina TUTTI i file di log senza eccezioni."""
+        r = QMessageBox.question(
+            self, "Elimina tutti i log",
+            "⚠️  Eliminare TUTTI i file di log di sessione?\n\n"
+            "Questa operazione rimuove tutti i log registrati,\n"
+            "indipendentemente dalla data. Non è reversibile.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if r != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from core.session_logger import SessionLogger
+            removed = SessionLogger.get_instance().purge_before(days_to_keep=0)
             QMessageBox.information(
-                self, "Svuota log",
+                self, "Elimina tutti i log",
                 f"Eliminati {removed} file di log."
-                + ("\nNessun file era più vecchio del limite." if removed == 0 else "")
+                + (" Archivio vuoto." if removed == 0 else "")
             )
             self._load()
         except Exception as e:

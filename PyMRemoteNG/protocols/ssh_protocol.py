@@ -18,11 +18,65 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer
 from PyQt6.QtGui import QFont, QTextCursor, QColor, QTextCharFormat
 
+import os
+
 from protocols.base import ProtocolBase
 from themes.dark_theme import TEXT_COLOR, SUB_COLOR, ACCENT_COLOR
 
 if TYPE_CHECKING:
     from core.models import ConnectionInfo
+
+# File known_hosts locale (formato OpenSSH)
+_KNOWN_HOSTS_PATH = os.path.join(
+    os.environ.get("APPDATA", os.path.expanduser("~")),
+    "Nexus", "known_hosts"
+)
+
+
+class _AskingPolicy(paramiko.MissingHostKeyPolicy):
+    """
+    Policy SSH che blocca connessioni a host sconosciuti finché l'utente
+    non verifica e accetta esplicitamente il fingerprint della chiave.
+    """
+
+    def __init__(self, verify_callback):
+        # verify_callback(hostname, fingerprint, key_type) -> bool
+        self._verify = verify_callback
+
+    def missing_host_key(self, client, hostname, key):
+        fp       = ':'.join(f'{b:02x}' for b in key.get_fingerprint())
+        key_type = key.get_name()
+        accepted = self._verify(hostname, fp, key_type)
+        if not accepted:
+            raise paramiko.SSHException(
+                f"Connessione annullata: chiave host non accettata per '{hostname}'."
+            )
+        # Salva la chiave verificata nel file known_hosts
+        client.get_host_keys().add(hostname, key.get_name(), key)
+        try:
+            os.makedirs(os.path.dirname(_KNOWN_HOSTS_PATH), exist_ok=True)
+            client.save_host_keys(_KNOWN_HOSTS_PATH)
+        except Exception:
+            pass
+
+
+def _update_known_hosts(hostname: str, new_key) -> None:
+    """Rimuove la vecchia chiave per l'host e inserisce quella nuova."""
+    try:
+        kh = paramiko.HostKeys()
+        if os.path.exists(_KNOWN_HOSTS_PATH):
+            try:
+                kh.load(_KNOWN_HOSTS_PATH)
+            except Exception:
+                pass
+        if hostname in kh:
+            del kh[hostname]
+        kh.add(hostname, new_key.get_name(), new_key)
+        os.makedirs(os.path.dirname(_KNOWN_HOSTS_PATH), exist_ok=True)
+        kh.save(_KNOWN_HOSTS_PATH)
+    except Exception:
+        pass
+
 
 # ─────────────────────────────────────────────────────────
 # Thread reader output SSH
@@ -83,8 +137,8 @@ class VT100Terminal(QPlainTextEdit):
     """
     _ANSI = re.compile(
         r'\x1b(?:'
-        r'\[([0-9;?]*)([A-Za-z])'
-        r'|\][^\x07\x1b]*(?:\x07|\x1b\\)'
+        r'\[([0-9;?]{0,32})([A-Za-z])'       # max 32 char parametri CSI
+        r'|\][^\x07\x1b]{0,256}(?:\x07|\x1b\\)'  # max 256 char sequenze OSC
         r'|[()][AB012]'
         r'|[=>]'
         r'|[MNOABC-Z\\]'
@@ -343,7 +397,10 @@ class VT100Terminal(QPlainTextEdit):
             cursor.insertText("\n", fmt)
 
         # Inserisce il messaggio nell'ultimo blocco (ora vuoto)
-        text_clean = text.replace('\r\n', '\n').replace('\r', '\n')
+        # Rimuove sequenze di escape ANSI/controllo per prevenire spoofing visivo
+        text_clean = re.sub(r'\x1b\[[^A-Za-z]*[A-Za-z]', '', text)
+        text_clean = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text_clean)
+        text_clean = text_clean.replace('\r\n', '\n').replace('\r', '\n')
         if not text_clean.endswith('\n'):
             text_clean += '\n'   # garantisce che il last block rimanga vuoto dopo
 
@@ -604,6 +661,9 @@ _MONITOR_CMD = (
     "awk 'NR==1{printf \"UP %.0f\\n\",$1}' /proc/uptime 2>/dev/null;"
     # Utente corrente
     "echo \"USER $(id -un 2>/dev/null || echo unknown)\";"
+    # Distribuzione Linux — legge PRETTY_NAME da /etc/os-release
+    "echo \"DISTRO $(awk -F'\"' '/^PRETTY_NAME/{print $2}'"
+    " /etc/os-release 2>/dev/null || echo Unknown)\";"
     # Tutte le partizioni reali — esclude filesystem virtuali e /run,/sys,/proc,/snap
     "df -h 2>/dev/null | awk 'NR>1 && $1~/^\\// "
     "&& $1!~/^(tmpfs|devtmpfs|udev|overlay|shm|cgroupfs)$/ "
@@ -688,6 +748,8 @@ def _parse_monitor_output(output: str) -> dict:
             except ValueError: pass
         elif key == "USER" and len(p) >= 2:
             result["user"] = p[1]
+        elif key == "DISTRO":
+            result["distro"] = " ".join(p[1:]) if len(p) > 1 else "Unknown"
         elif key == "DISK" and len(p) >= 5:
             try:
                 pct = int(p[3].rstrip('%'))
@@ -832,12 +894,15 @@ class SSHMonitorPanel(QWidget):
         lay.addWidget(self._net_tx_lbl)
         lay.addWidget(self._net_rx_lbl)
 
-        # ── Uptime + Utente ─────────────────────────────────────────
+        # ── Uptime + Utente + Distro ─────────────────────────────────
         lay.addWidget(_sep_line())
-        self._uptime_lbl = _lbl("⏱  --", "#CCCCCC", 10)
-        self._user_lbl   = _lbl("👤  --", "#CCCCCC", 10)
+        self._uptime_lbl  = _lbl("⏱  --", "#CCCCCC", 10)
+        self._user_lbl    = _lbl("👤  --", "#CCCCCC", 10)
+        self._distro_lbl  = _lbl("🐧  --", "#CCCCCC", 10)
+        self._distro_lbl.setWordWrap(True)
         lay.addWidget(self._uptime_lbl)
         lay.addWidget(self._user_lbl)
+        lay.addWidget(self._distro_lbl)
 
         # ── Dischi (sezione dinamica) ────────────────────────────────
         lay.addWidget(_sep_line())
@@ -930,6 +995,10 @@ class SSHMonitorPanel(QWidget):
         if "user" in stats:
             self._user_lbl.setText(f"👤  {stats['user']}")
 
+        # Distro
+        if "distro" in stats:
+            self._distro_lbl.setText(f"🐧  {stats['distro']}")
+
         # Dischi — ricostruisce la sezione dinamicamente se i mount cambiano
         disks = stats.get("disks", [])
         if disks:
@@ -989,11 +1058,13 @@ class SSHMonitorPanel(QWidget):
 # Thread login SSH
 # ─────────────────────────────────────────────────────────
 class SSHLoginWorker(QThread):
-    connected    = pyqtSignal(object, object)   # (channel, SSHClient)
-    ask_username = pyqtSignal()
-    ask_password = pyqtSignal(str)
-    failed       = pyqtSignal(str)
-    info_msg     = pyqtSignal(str)
+    connected        = pyqtSignal(object, object)   # (channel, SSHClient)
+    ask_username     = pyqtSignal()
+    ask_password     = pyqtSignal(str)
+    ask_host_key     = pyqtSignal(str, str, str)    # hostname, fingerprint, key_type
+    ask_changed_key  = pyqtSignal(str, str, str)    # hostname, old_fp, new_fp
+    failed           = pyqtSignal(str)
+    info_msg         = pyqtSignal(str)
 
     def __init__(self, hostname: str, port: int, username: str, password: str):
         super().__init__()
@@ -1006,9 +1077,10 @@ class SSHLoginWorker(QThread):
         self.port     = port or 22
         self.username = username.strip()
         self.password = password
-        self._uev = threading.Event()
-        self._pev = threading.Event()
-        self._uval = ""; self._pval = ""
+        self._uev  = threading.Event()
+        self._pev  = threading.Event()
+        self._kev  = threading.Event()   # host-key verification event
+        self._uval = ""; self._pval = ""; self._kval = False
 
     @staticmethod
     def _norm(h: str) -> str:
@@ -1016,6 +1088,26 @@ class SSHLoginWorker(QThread):
 
     def provide_username(self, v: str): self._uval = v; self._uev.set()
     def provide_password(self, v: str): self._pval = v; self._pev.set()
+    def provide_host_key_answer(self, accepted: bool):
+        self._kval = accepted
+        self._kev.set()
+
+    def _verify_host_key(self, hostname: str, fp: str, key_type: str) -> bool:
+        """Blocca il thread worker finché l'utente non risponde (max 60s)."""
+        self._kev.clear()
+        self.ask_host_key.emit(hostname, fp, key_type)
+        self._kev.wait(60)
+        return self._kval
+
+    def _handle_changed_key(self, hostname: str,
+                             old_key, new_key) -> bool:
+        """Avvisa per chiave cambiata. Ritorna True se l'utente accetta."""
+        old_fp = ':'.join(f'{b:02x}' for b in old_key.get_fingerprint())
+        new_fp = ':'.join(f'{b:02x}' for b in new_key.get_fingerprint())
+        self._kev.clear()
+        self.ask_changed_key.emit(hostname, old_fp, new_fp)
+        self._kev.wait(60)
+        return self._kval
 
     def run(self):
         try:
@@ -1023,8 +1115,8 @@ class SSHLoginWorker(QThread):
             is_ip    = bool(re.match(r'^\d{1,3}(\.\d{1,3}){3}$', hostname))
             try:
                 resolved = hostname if is_ip else socket.gethostbyname(hostname)
-            except socket.gaierror as e:
-                self.failed.emit(f"DNS: impossibile risolvere '{hostname}': {e}\n")
+            except socket.gaierror:
+                self.failed.emit(f"DNS: impossibile risolvere '{hostname}'.\n")
                 return
 
             self.info_msg.emit(f"Connessione a {hostname}:{self.port}...\n")
@@ -1048,12 +1140,18 @@ class SSHLoginWorker(QThread):
                 self._pev.wait(120); password = self._pval; self._pval = ""
 
             self.info_msg.emit(f"Autenticazione come '{username}'...\n")
+            policy = _AskingPolicy(self._verify_host_key)
             max_att = 3
             for att in range(max_att):
                 try:
-                    s2 = socket.create_connection((resolved, self.port), timeout=10) if att > 0 else sock
+                    s2 = socket.create_connection(
+                        (resolved, self.port), timeout=10
+                    ) if att > 0 else sock
                     cli = paramiko.SSHClient()
-                    cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                    # Carica le chiavi note da disco ad ogni tentativo
+                    if os.path.exists(_KNOWN_HOSTS_PATH):
+                        cli.load_host_keys(_KNOWN_HOSTS_PATH)
+                    cli.set_missing_host_key_policy(policy)
                     cli.connect(
                         hostname=hostname, sock=s2,
                         username=username, password=password or None,
@@ -1063,6 +1161,22 @@ class SSHLoginWorker(QThread):
                     ch = cli.invoke_shell(term="xterm-256color", width=220, height=50)
                     self.connected.emit(ch, cli)
                     return
+                except paramiko.BadHostKeyException as bhe:
+                    # Chiave host CAMBIATA — possibile attacco MITM
+                    accepted = self._handle_changed_key(
+                        hostname, bhe.expected_key, bhe.got_key
+                    )
+                    if not accepted:
+                        self.failed.emit(
+                            f"⛔  CONNESSIONE BLOCCATA\n"
+                            f"La chiave host di '{hostname}' è cambiata.\n"
+                            f"Possibile attacco Man-in-the-Middle!\n"
+                            f"Verifica con l'amministratore di sistema prima di connetterti.\n"
+                        )
+                        return
+                    # Utente ha accettato: aggiorna known_hosts e riprova
+                    _update_known_hosts(hostname, bhe.got_key)
+                    continue
                 except paramiko.AuthenticationException:
                     if att < max_att - 1:
                         self.ask_password.emit(
@@ -1071,10 +1185,10 @@ class SSHLoginWorker(QThread):
                         password = self._pval; self._pval = ""
                     else:
                         self.failed.emit("Accesso negato: troppi tentativi.\n"); return
-                except paramiko.SSHException as e:
-                    self.failed.emit(f"Errore SSH: {e}\n"); return
-        except Exception as e:
-            self.failed.emit(f"Errore: {e}\n")
+                except paramiko.SSHException:
+                    self.failed.emit("Errore SSH: protocollo non supportato o chiave rifiutata.\n"); return
+        except Exception:
+            self.failed.emit("Errore di connessione: verifica host, porta e credenziali.\n")
 
 
 # ─────────────────────────────────────────────────────────
@@ -1188,6 +1302,8 @@ class SSHProtocol(ProtocolBase):
         self._worker.connected.connect(self._on_connected)
         self._worker.ask_username.connect(self._ask_username)
         self._worker.ask_password.connect(self._ask_password)
+        self._worker.ask_host_key.connect(self._on_ask_host_key)
+        self._worker.ask_changed_key.connect(self._on_ask_changed_key)
         self._worker.failed.connect(self._on_failed)
         self._worker.info_msg.connect(self._term_widget.write_info)
         self._worker.start()
@@ -1207,6 +1323,12 @@ class SSHProtocol(ProtocolBase):
 
         transport = cli.get_transport()
         if transport and transport.is_active():
+            # Keepalive ogni 30s e timeout socket per prevenire connessioni appese
+            try:
+                transport.set_keepalive(30)
+                transport.sock.settimeout(120)
+            except Exception:
+                pass
             self._monitor.start_monitoring(transport)
 
         self.on_connected()
@@ -1233,6 +1355,52 @@ class SSHProtocol(ProtocolBase):
             pending_password=True,
             cb=lambda v: self._worker.provide_password(v) if self._worker else None
         )
+
+    def _on_ask_host_key(self, hostname: str, fingerprint: str, key_type: str):
+        """Mostra dialog di verifica per una chiave host SSH sconosciuta."""
+        from PyQt6.QtWidgets import QMessageBox, QPushButton
+        msg = QMessageBox(self.parent_widget)
+        msg.setWindowTitle("Verifica chiave host SSH")
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setText(
+            f"<b>Server SSH sconosciuto</b><br><br>"
+            f"Host:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<code>{hostname}</code><br>"
+            f"Tipo chiave:&nbsp;<code>{key_type}</code><br>"
+            f"Fingerprint:&nbsp;<code>{fingerprint}</code><br><br>"
+            f"Non hai mai verificato questo server.<br>"
+            f"Vuoi salvare la chiave e connetterti?"
+        )
+        accept_btn = msg.addButton("✔  Accetta e connetti",
+                                   QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton("✘  Annulla",
+                      QMessageBox.ButtonRole.RejectRole)
+        msg.exec()
+        accepted = msg.clickedButton() is accept_btn
+        if self._worker:
+            self._worker.provide_host_key_answer(accepted)
+
+    def _on_ask_changed_key(self, hostname: str, old_fp: str, new_fp: str):
+        """Avvisa che la chiave host è cambiata — possibile MITM."""
+        from PyQt6.QtWidgets import QMessageBox
+        msg = QMessageBox(self.parent_widget)
+        msg.setWindowTitle("⚠️  Chiave host CAMBIATA")
+        msg.setIcon(QMessageBox.Icon.Critical)
+        msg.setText(
+            f"<b>⚠️  ATTENZIONE: la chiave host di '{hostname}' è CAMBIATA!</b><br><br>"
+            f"Questa situazione può indicare un attacco <b>Man-in-the-Middle</b>.<br><br>"
+            f"Chiave precedente:&nbsp;<code>{old_fp}</code><br>"
+            f"Nuova chiave:&nbsp;&nbsp;&nbsp;&nbsp;<code>{new_fp}</code><br><br>"
+            f"Connettiti <b>solo se sei certo</b> che la chiave sia cambiata legittimamente<br>"
+            f"(es. il server è stato reinstallato)."
+        )
+        accept_btn = msg.addButton("Aggiorna chiave e connetti",
+                                   QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton("⛔  Blocca connessione",
+                      QMessageBox.ButtonRole.RejectRole)
+        msg.exec()
+        accepted = msg.clickedButton() is accept_btn
+        if self._worker:
+            self._worker.provide_host_key_answer(accepted)
 
     def _on_failed(self, msg: str):
         self._term_widget.write_error(msg)

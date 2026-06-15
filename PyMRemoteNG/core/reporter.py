@@ -47,20 +47,20 @@ def generate_html_report(connections: List["ConnectionInfo"],
         event_type_stats[e.type] = event_type_stats.get(e.type, 0) + 1
 
     proto_rows = "".join(
-        f"<tr><td>{p}</td><td>{n}</td></tr>"
+        f"<tr><td>{_esc(p)}</td><td>{n}</td></tr>"
         for p, n in sorted(proto_stats.items(), key=lambda x: -x[1])
     )
     conn_rows = "".join(
-        f"<tr><td>{c.name}</td><td>{c.hostname}</td><td>{c.port}</td>"
-        f"<td>{c.protocol.value}</td><td>{c.username}</td>"
-        f"<td>{c.parent.name if c.parent else 'Root'}</td></tr>"
+        f"<tr><td>{_esc(c.name)}</td><td>{_esc(c.hostname)}</td><td>{c.port}</td>"
+        f"<td>{_esc(c.protocol.value)}</td><td>{_esc(c.username)}</td>"
+        f"<td>{_esc(c.parent.name if c.parent else 'Root')}</td></tr>"
         for c in connections
     )
     event_rows = "".join(
-        f"<tr><td>{e.ts}</td>"
-        f"<td style='color:{_event_color(e.type)}'>{e.type}</td>"
-        f"<td>{e.user}</td><td>{e.host}</td>"
-        f"<td>{e.protocol}</td><td>{_esc(e.detail)}</td></tr>"
+        f"<tr><td>{_esc(e.ts)}</td>"
+        f"<td style='color:{_event_color(e.type)}'>{_esc(e.type)}</td>"
+        f"<td>{_esc(e.user)}</td><td>{_esc(e.host)}</td>"
+        f"<td>{_esc(e.protocol)}</td><td>{_esc(e.detail)}</td></tr>"
         for e in events[:500]
     )
 
@@ -76,7 +76,7 @@ def generate_html_report(connections: List["ConnectionInfo"],
 <html lang="it">
 <head>
 <meta charset="UTF-8">
-<title>PyMRemoteNG — Report {now}</title>
+<title>Nexus — Report {now}</title>
 <style>
   body  {{ font-family: 'Segoe UI', sans-serif; background:#0D0D0D; color:#E8E8E8; margin:32px; }}
   h1   {{ color:#4EC94E; margin-bottom:4px; }}
@@ -94,7 +94,7 @@ def generate_html_report(connections: List["ConnectionInfo"],
 </style>
 </head>
 <body>
-<h1>PyMRemoteNG — Report Aziendale</h1>
+<h1>Nexus — Report Aziendale</h1>
 <p class="sub">Generato il {now}</p>
 <div>{stat_cards}</div>
 <h2>Distribuzione Protocolli</h2>

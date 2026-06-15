@@ -14,7 +14,7 @@ from themes.dark_theme import ACCENT_COLOR, CARD_COLOR, TEXT_COLOR, SUB_COLOR, B
 
 SETTINGS_PATH = os.path.join(
     os.environ.get("APPDATA", os.path.expanduser("~")),
-    "PyMRemoteNG", "settings.json"
+    "Nexus", "settings.json"
 )
 
 
@@ -81,7 +81,7 @@ def _check(label, checked=False):
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("⚙  Impostazioni PyMRemoteNG")
+        self.setWindowTitle("⚙  Impostazioni Nexus")
         self.setMinimumSize(560, 520)
         self.setStyleSheet(f"QDialog {{ background:{CARD_COLOR}; color:{TEXT_COLOR}; }}")
         self._cfg = load_settings()

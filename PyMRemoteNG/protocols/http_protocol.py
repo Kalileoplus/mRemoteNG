@@ -2,11 +2,14 @@
 Protocollo HTTP/HTTPS - browser integrato via QWebEngineView.
 """
 from __future__ import annotations
+import re as _re
 from typing import TYPE_CHECKING
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
 from PyQt6.QtCore import QUrl
 from protocols.base import ProtocolBase
+
+_HOSTNAME_RE = _re.compile(r'^[a-zA-Z0-9.\-_\[\]:]+$')
 
 try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -44,13 +47,22 @@ class HTTPProtocol(ProtocolBase):
 
     def connect(self) -> bool:
         info = self.connection_info
+        hostname = (info.hostname or "").strip()
+        if not hostname or not _HOSTNAME_RE.match(hostname):
+            if self._browser is None:
+                from PyQt6.QtWidgets import QLabel
+                from PyQt6.QtCore import Qt
+                lbl = QLabel("Hostname non valido.")
+                lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self._widget.layout().addWidget(lbl)
+            return False
         scheme = "https" if info.protocol.value == "HTTPS" else "http"
         port = info.port
         default_ports = {"http": 80, "https": 443}
         if port and port != default_ports.get(scheme):
-            url = f"{scheme}://{info.hostname}:{port}"
+            url = f"{scheme}://{hostname}:{port}"
         else:
-            url = f"{scheme}://{info.hostname}"
+            url = f"{scheme}://{hostname}"
         if self._browser:
             self._browser.load(QUrl(url))
         self.on_connected()

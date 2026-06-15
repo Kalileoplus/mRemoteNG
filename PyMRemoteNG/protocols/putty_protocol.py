@@ -2,12 +2,16 @@
 Protocollo PuTTY-based (Telnet, Rlogin, RAW) - lancia PuTTY come processo.
 """
 from __future__ import annotations
+import re as _re
 import subprocess
 import os
 from typing import TYPE_CHECKING
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
 from PyQt6.QtCore import Qt
 from protocols.base import ProtocolBase
+
+_HOSTNAME_RE = _re.compile(r'^[a-zA-Z0-9.\-_\[\]:]+$')
+_CTRL_RE     = _re.compile(r'[\x00-\x1f\x7f]')
 
 if TYPE_CHECKING:
     from core.models import ConnectionInfo
@@ -41,18 +45,24 @@ class PuttyProtocol(ProtocolBase):
             self._label.setText("PuTTY non trovato.\nScarica PuTTY da putty.org")
             return False
         try:
+            hostname = (info.hostname or "").strip()
+            if not hostname or not _HOSTNAME_RE.match(hostname):
+                self._label.setText("Hostname non valido.")
+                return False
             from core.models import ProtocolType
             proto_flag = {
                 ProtocolType.Telnet: "-telnet",
                 ProtocolType.Rlogin: "-rlogin",
                 ProtocolType.RAW:    "-raw",
             }.get(info.protocol, "-ssh")
-            cmd = [putty, proto_flag, info.hostname, "-P", str(info.port)]
+            cmd = [putty, proto_flag, hostname, "-P", str(info.port)]
             if info.username:
-                cmd += ["-l", info.username]
+                safe_user = _CTRL_RE.sub('', info.username)[:256]
+                if safe_user:
+                    cmd += ["-l", safe_user]
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-            self._process = subprocess.Popen(cmd, creationflags=flags)
-            self._label.setText(f"PuTTY avviato: {info.protocol.value} → {info.hostname}:{info.port}")
+            self._process = subprocess.Popen(cmd, creationflags=flags, close_fds=True)
+            self._label.setText(f"PuTTY avviato: {info.protocol.value} → {hostname}:{info.port}")
             self.on_connected()
             return True
         except Exception as e:

@@ -155,8 +155,17 @@ class MultiExecDialog(QDialog):
             self.session_list.item(i).setCheckState(Qt.CheckState.Unchecked)
 
     def _execute(self):
+        from core.user_manager import UserManager
+        user = UserManager.get_instance().current_user()
+        if not user or not user.can("run_scripts"):
+            self.log.append("❌ Permesso negato: ruolo insufficiente per eseguire comandi.")
+            return
+
         cmd = self.cmd_input.text().strip()
         if not cmd:
+            return
+        if len(cmd) > 2048:
+            self.log.append("❌ Comando troppo lungo (max 2048 caratteri).")
             return
         count = 0
         for i in range(self.session_list.count()):
@@ -167,6 +176,6 @@ class MultiExecDialog(QDialog):
             if tab:
                 tab.send_keys(cmd + "\r")
                 count += 1
-        self.log.append(f"✓ Inviato a {count} sessioni: {cmd}")
+        self.log.append(f"✓ Inviato a {count} sessioni.")
         self.cmd_input.clear()
         self.cmd_input.setFocus()

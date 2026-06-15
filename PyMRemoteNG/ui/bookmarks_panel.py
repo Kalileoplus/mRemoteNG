@@ -20,7 +20,7 @@ from themes.dark_theme import ACCENT_COLOR, CARD_COLOR, TEXT_COLOR, SUB_COLOR
 
 BOOKMARKS_PATH = os.path.join(
     os.environ.get("APPDATA", os.path.expanduser("~")),
-    "PyMRemoteNG", "bookmarks.json"
+    "Nexus", "bookmarks.json"
 )
 
 PROTO_ICON = {

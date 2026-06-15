@@ -72,7 +72,17 @@ def parse_mobaxterm_file(filepath: str) -> List[Tuple[str, List[ConnectionInfo]]
     (nome_cartella, [ConnectionInfo, ...]).
     Ogni sezione [Bookmarks...] diventa una cartella separata.
     """
-    with open(filepath, encoding="utf-8", errors="replace") as f:
+    import os as _os
+    abs_path = _os.path.realpath(filepath)
+    # Accetta solo file nella home utente o in Temp (nessun path traversal / UNC share)
+    home = _os.path.realpath(_os.path.expanduser("~"))
+    temp = _os.path.realpath(_os.environ.get("TEMP", _os.path.join(home, "AppData", "Local", "Temp")))
+    if not (abs_path.startswith(home + _os.sep) or abs_path.startswith(temp + _os.sep)):
+        raise ValueError(f"Percorso file non consentito: {filepath}")
+    # Verifica estensione
+    if not abs_path.lower().endswith(('.mxtsessions', '.ini', '.txt')):
+        raise ValueError("Tipo di file non supportato per l'importazione.")
+    with open(abs_path, encoding="utf-8", errors="replace") as f:
         lines = f.read().splitlines()
 
     sections: list[dict] = []

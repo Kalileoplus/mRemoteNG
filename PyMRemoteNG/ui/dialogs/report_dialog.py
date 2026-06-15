@@ -176,4 +176,7 @@ class ReportDialog(QDialog):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             if reply == QMessageBox.StandardButton.Yes:
-                os.startfile(path)
+                if os.path.isfile(path):
+                    os.startfile(path)
+                else:
+                    QMessageBox.warning(self, "Errore", "Il file non è più disponibile.")

@@ -2,6 +2,8 @@
 Parser e writer per confCons.xml (formato mRemoteNG v2.8)
 """
 from __future__ import annotations
+import logging as _logging
+import re as _re
 import xml.etree.ElementTree as ET
 from typing import Optional
 from core.models import (
@@ -28,6 +30,29 @@ def _geti(attr: dict, key: str, default: int = 0) -> int:
         return default
 
 
+# ── Validatori input (VULN-11) ────────────────────────────────────────────────
+
+_HOSTNAME_RE = _re.compile(r'^[a-zA-Z0-9.\-_\[\]:]+$')
+
+
+def _sanitize_hostname(h: str) -> str:
+    """Accetta solo caratteri validi per hostname/IP; troncato a 255 char."""
+    h = h.strip()
+    if not h or not _HOSTNAME_RE.match(h):
+        return ""
+    return h[:255]
+
+
+def _sanitize_port(p: int, default: int = 0) -> int:
+    """Porta valida nell'intervallo 1-65535."""
+    return p if 1 <= p <= 65535 else default
+
+
+def _sanitize_command(s: str) -> str:
+    """Rimuove tutti i caratteri non printable inclusi newline e tab."""
+    return ''.join(c for c in s if c.isprintable())[:2048]
+
+
 def _parse_node(element: ET.Element, parent=None) -> Optional[ConnectionInfo]:
     a = element.attrib
     node_type = a.get("Type", "Connection")
@@ -47,9 +72,9 @@ def _parse_node(element: ET.Element, parent=None) -> Optional[ConnectionInfo]:
     node.favorite    = _getb(a, "Favorite", False)
     node.tags        = _get(a, "Tags", "")
 
-    # Connessione
-    node.hostname = _get(a, "Hostname", "")
-    node.port     = _geti(a, "Port", 3389)
+    # Connessione (VULN-11: validazione input)
+    node.hostname = _sanitize_hostname(_get(a, "Hostname", ""))
+    node.port     = _sanitize_port(_geti(a, "Port", 3389), default=3389)
     node.username = _get(a, "Username", "")
     node.password = _get(a, "Password", "")   # già cifrato
     node.domain   = _get(a, "Domain", "")
@@ -64,10 +89,10 @@ def _parse_node(element: ET.Element, parent=None) -> Optional[ConnectionInfo]:
         node.protocol = ProtocolType.RDP
 
     node.putty_session    = _get(a, "PuttySession", "")
-    node.ssh_options      = _get(a, "SSHOptions", "")
-    node.opening_command  = _get(a, "OpeningCommand", "")
+    node.ssh_options      = _sanitize_command(_get(a, "SSHOptions", ""))
+    node.opening_command  = _sanitize_command(_get(a, "OpeningCommand", ""))
     node.ssh_tunnel_name  = _get(a, "SSHTunnelConnectionName", "")
-    node.ext_app          = _get(a, "ExtApp", "")
+    node.ext_app          = _sanitize_command(_get(a, "ExtApp", ""))
 
     # RDP
     node.rdp_version          = _get(a, "RDPVersion", "Rdc10")
@@ -77,8 +102,8 @@ def _parse_node(element: ET.Element, parent=None) -> Optional[ConnectionInfo]:
     node.load_balance_info    = _get(a, "LoadBalanceInfo", "")
     node.use_cred_ssp         = _getb(a, "UseCredSsp", True)
     node.use_restricted_admin = _getb(a, "UseRestrictedAdmin", False)
-    node.rdp_start_program    = _get(a, "RDPStartProgram", "")
-    node.rdp_start_program_workdir = _get(a, "RDPStartProgramWorkDir", "")
+    node.rdp_start_program         = _sanitize_command(_get(a, "RDPStartProgram", ""))
+    node.rdp_start_program_workdir = _sanitize_command(_get(a, "RDPStartProgramWorkDir", ""))
     node.vm_id                = _get(a, "VmId", "")
     node.use_vm_id            = _getb(a, "UseVmId", False)
     node.use_enhanced_mode    = _getb(a, "UseEnhancedMode", False)
@@ -208,8 +233,8 @@ def load_connections(filepath: str) -> RootNode:
                 root.children.append(child)
     except FileNotFoundError:
         pass
-    except ET.ParseError as e:
-        print(f"Errore parsing XML: {e}")
+    except ET.ParseError:
+        _logging.warning("File di configurazione XML non valido o corrotto.")
     return root
 
 
