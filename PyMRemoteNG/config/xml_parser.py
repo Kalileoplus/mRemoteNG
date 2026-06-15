@@ -220,6 +220,47 @@ def _parse_node(element: ET.Element, parent=None) -> Optional[ConnectionInfo]:
     return node
 
 
+def _rebuild_hierarchy_from_paths(root: RootNode) -> None:
+    """
+    Se esistono container con nomi tipo 'PARENT\\CHILD' allo stesso livello,
+    li riposiziona come figli del container corretto.
+    Supporta path multilivello: 'A\\B\\C' -> A > B > C.
+    """
+    has_paths = any(
+        isinstance(c, ContainerInfo) and '\\' in c.name
+        for c in root.children
+    )
+    if not has_paths:
+        return
+
+    def _get_or_create(parent, name: str) -> ContainerInfo:
+        for c in parent.children:
+            if isinstance(c, ContainerInfo) and c.name == name:
+                return c
+        new = ContainerInfo()
+        new.name = name
+        new.parent = parent
+        new.is_expanded = True
+        parent.children.append(new)
+        return new
+
+    to_remove = []
+    for child in list(root.children):
+        if isinstance(child, ContainerInfo) and '\\' in child.name:
+            parts = child.name.split('\\')
+            current = root
+            for part in parts[:-1]:
+                current = _get_or_create(current, part)
+            child.name = parts[-1]
+            child.parent = current
+            current.children.append(child)
+            to_remove.append(child)
+
+    for item in to_remove:
+        if item in root.children:
+            root.children.remove(item)
+
+
 def load_connections(filepath: str) -> RootNode:
     """Carica confCons.xml e restituisce il RootNode."""
     root = RootNode()
@@ -235,6 +276,7 @@ def load_connections(filepath: str) -> RootNode:
         pass
     except ET.ParseError:
         _logging.warning("File di configurazione XML non valido o corrotto.")
+    _rebuild_hierarchy_from_paths(root)
     return root
 
 
